@@ -39,28 +39,28 @@ export async function saveNoteAction(
   // we create a new note rather than updating.
   const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
 
+  const updateData: Record<string, unknown> = {
+    title: data.title,
+    content: data.content,
+    tags: data.tags || [],
+    patientId: data.patientId || "",
+    pin: data.pin || "",
+  };
+  if (data.isPinned !== undefined) {
+    updateData.isPinned = data.isPinned;
+  }
+
   let updatedNote;
   if (isObjectId) {
     updatedNote = await Note.findByIdAndUpdate(
       id,
-      { 
-        title: data.title, 
-        content: data.content,
-        tags: data.tags || [],
-        patientId: data.patientId || "",
-        pin: data.pin || "",
-        isPinned: data.isPinned ?? false
-      },
+      updateData,
       { new: true, upsert: true }
     );
   } else {
     updatedNote = await Note.create({
-      title: data.title,
-      content: data.content,
-      tags: data.tags || [],
-      patientId: data.patientId || "",
-      pin: data.pin || "",
-      isPinned: data.isPinned ?? false
+      ...updateData,
+      isPinned: data.isPinned ?? false,
     });
   }
 

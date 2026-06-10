@@ -1,28 +1,36 @@
 {
-  "name": "ProNotes - Pro  Notepad",
+  "name": "ProNotes - Personal Notepad",
   "short_name": "ProNotes",
-  "description": "Secure HIPAA-compliant clinical record notepad",
+  "description": "Personal notepad for saving important notes",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0B1120",
+  "background_color": "#F8FAFC",
   "theme_color": "#0B1120",
   "orientation": "portrait-primary",
   "icons": [
     {
       "src": "/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
     },
     {
       "src": "/icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
     },
     {
-      "src": "/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

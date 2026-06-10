@@ -9,7 +9,6 @@ import {
   FileText, 
   X, 
   Clock, 
-  ShieldCheck,
   Trash2,
   Tag,
   Lock,
@@ -57,7 +56,6 @@ export default function Home() {
 
   // PWA State
   const [deferredPrompt, setDeferredPrompt] = React.useState<any>(null);
-  const [isInstallable, setIsInstallable] = React.useState<boolean>(false);
 
   // Notepad PIN Lock Screen State
   const [pinModalOpen, setPinModalOpen] = React.useState<boolean>(false);
@@ -93,7 +91,6 @@ export default function Home() {
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e);
-      setIsInstallable(true);
     };
 
     window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
@@ -106,14 +103,20 @@ export default function Home() {
   }, []);
 
   const handleInstallApp = async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === "accepted") {
-      setIsInstallable(false);
-      setDeferredPrompt(null);
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+    } else {
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if (isIOS) {
+        alert("To install: tap Share in Safari, then 'Add to Home Screen'.");
+      } else {
+        alert("To install: open browser menu and choose 'Install app' or 'Add to Home screen'.");
+      }
     }
   };
+
+  const fetchIdRef = React.useRef(0);
 
   // Load notes from localStorage immediately on mount for instant rendering (<1ms)
   React.useEffect(() => {
@@ -134,14 +137,17 @@ export default function Home() {
 
   // Fetch all notes from database on mount in background
   React.useEffect(() => {
+    const fetchId = ++fetchIdRef.current;
+
     async function loadNotes() {
       try {
-        // Only trigger loading skeletons if there is no cache loaded
         const cached = localStorage.getItem("pronotes_cache");
         if (!cached) {
           setIsLoading(true);
         }
         const dbNotes = await fetchNotesAction();
+        if (fetchId !== fetchIdRef.current) return;
+
         setNotes(dbNotes);
         localStorage.setItem("pronotes_cache", JSON.stringify(dbNotes));
         if (dbNotes.length > 0) {
@@ -150,10 +156,31 @@ export default function Home() {
       } catch (err) {
         console.error("Failed to load notes from DB:", err);
       } finally {
-        setIsLoading(false);
+        if (fetchId === fetchIdRef.current) {
+          setIsLoading(false);
+        }
       }
     }
     loadNotes();
+  }, []);
+
+  // Refresh from server when tab becomes visible (keeps devices in sync)
+  React.useEffect(() => {
+    const refreshNotes = async () => {
+      if (document.visibilityState !== "visible") return;
+      const fetchId = ++fetchIdRef.current;
+      try {
+        const dbNotes = await fetchNotesAction();
+        if (fetchId !== fetchIdRef.current) return;
+        setNotes(dbNotes);
+        localStorage.setItem("pronotes_cache", JSON.stringify(dbNotes));
+      } catch (err) {
+        console.error("Failed to refresh notes:", err);
+      }
+    };
+
+    document.addEventListener("visibilitychange", refreshNotes);
+    return () => document.removeEventListener("visibilitychange", refreshNotes);
   }, []);
 
   // Sync state mutations to localStorage automatically
@@ -177,7 +204,8 @@ export default function Home() {
           content: activeNote.content,
           tags: activeNote.tags,
           patientId: activeNote.patientId,
-          pin: activeNote.pin || "" // Include Pin in autosave
+          pin: activeNote.pin || "",
+          isPinned: activeNote.isPinned ?? false,
         });
 
         if (response.success && response.note) {
@@ -210,7 +238,7 @@ export default function Home() {
     }, 1000);
 
     return () => clearTimeout(timer);
-  }, [activeNote?.title, activeNote?.content, activeNote?.patientId, activeNote?.tags, activeNote?.pin, isDraftDirty, activeNoteId]);
+  }, [activeNote?.title, activeNote?.content, activeNote?.patientId, activeNote?.tags, activeNote?.pin, activeNote?.isPinned, isDraftDirty, activeNoteId]);
 
   // Handle Note Clicks & Lock Prompt Check
   const handleNoteCardClick = (note: Note) => {
@@ -332,7 +360,8 @@ export default function Home() {
         content: activeNote.content,
         tags: activeNote.tags,
         patientId: activeNote.patientId,
-        pin: activeNote.pin || ""
+        pin: activeNote.pin || "",
+        isPinned: activeNote.isPinned ?? false,
       });
 
       if (response.success && response.note) {
@@ -372,8 +401,8 @@ export default function Home() {
       title: "New Note",
       content: "",
       updatedAt: "Just now",
-      tags: ["General Note"],
-      patientId: "PT-" + Math.floor(10000 + Math.random() * 90000),
+      tags: ["General"],
+      patientId: "",
       isLocked: false,
       pin: ""
     };
@@ -394,10 +423,10 @@ export default function Home() {
     if (updatedNotes.length === 0) {
       const fallbackNote: Note = {
         id: "temp-" + Date.now(),
-        title: "Untitled Case Note",
+        title: "Untitled Note",
         content: "",
         updatedAt: "Just now",
-        tags: ["General Note"],
+        tags: ["General"],
         patientId: "",
         isLocked: false,
         pin: ""
@@ -433,7 +462,8 @@ export default function Home() {
         content: activeNote?.content || "",
         tags: activeNote?.tags || [],
         patientId: activeNote?.patientId || "",
-        pin: newPinValue
+        pin: newPinValue,
+        isPinned: activeNote?.isPinned ?? false,
       });
       if (response.success && response.note) {
         setNotes(prev =>
@@ -471,7 +501,8 @@ export default function Home() {
         content: activeNote?.content || "",
         tags: activeNote?.tags || [],
         patientId: activeNote?.patientId || "",
-        pin: ""
+        pin: "",
+        isPinned: activeNote?.isPinned ?? false,
       });
       if (response.success && response.note) {
         setNotes(prev =>
@@ -550,38 +581,41 @@ export default function Home() {
     <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#0B1120] text-slate-900 dark:text-slate-100 flex flex-col relative pb-32 transition-colors duration-500 font-sans">
       
       {/* Dashboard Top Header */}
-      <header className="w-full max-w-6xl mx-auto py-12 px-6 flex items-center justify-between">
-        <div className="flex flex-col gap-1">
+      <header className="w-full max-w-6xl mx-auto py-6 md:py-12 px-4 sm:px-6 flex items-center justify-between gap-4">
+        <div className="flex flex-col gap-1 min-w-0">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-blue-600 dark:bg-[#3B82F6] flex items-center justify-center shadow-lg shadow-blue-500/20">
+            <div className="w-7 h-7 rounded-lg bg-blue-600 dark:bg-[#3B82F6] flex items-center justify-center shadow-lg shadow-blue-500/20 shrink-0">
               <FileText className="w-4 h-4 text-white stroke-[2.5]" />
             </div>
-            <span className="font-extrabold text-xl tracking-tight text-slate-800 dark:text-white">
+            <span className="font-extrabold text-xl tracking-tight text-slate-800 dark:text-white truncate">
               ProNotes
             </span>
           </div>
           <p className="text-xs text-slate-400 dark:text-slate-450 font-medium">
-            Personal Medical Record Notes
+            Personal Notes
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* PWA Install Button */}
-          {isInstallable && (
-            <button
-              onClick={handleInstallApp}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-blue-200/50 dark:border-blue-500/20 bg-blue-50/50 dark:bg-[#3B82F6]/10 text-[10px] text-blue-600 dark:text-[#3B82F6] font-bold uppercase tracking-wider hover:bg-blue-100 dark:hover:bg-[#3B82F6]/20 transition-all cursor-pointer whitespace-nowrap"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Install App</span>
-            </button>
-          )}
-
-          {/* HIPAA environment session indicator */}
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 dark:border-white/5 bg-slate-50/40 dark:bg-white/5 backdrop-blur-md text-[10px] text-slate-400 dark:text-slate-450 font-bold uppercase tracking-wider whitespace-nowrap">
-            <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-[#3B82F6]" />
-            <span>Secure Session</span>
-          </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-emerald-200/60 dark:border-emerald-500/20 bg-emerald-50/60 dark:bg-emerald-500/10 overflow-hidden"
+          >
+            <motion.span
+              className="absolute inset-0 bg-gradient-to-r from-transparent via-emerald-400/20 to-transparent"
+              animate={{ x: ["-100%", "200%"] }}
+              transition={{ duration: 2.5, repeat: Infinity, ease: "linear" }}
+            />
+            <motion.span
+              className="relative w-2 h-2 rounded-full bg-emerald-500"
+              animate={{ scale: [1, 1.3, 1], opacity: [1, 0.7, 1] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
+            />
+            <span className="relative text-[10px] text-emerald-600 dark:text-emerald-400 font-bold uppercase tracking-wider">
+              Synced
+            </span>
+          </motion.div>
         </div>
       </header>
 
@@ -594,7 +628,7 @@ export default function Home() {
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 dark:text-slate-500" />
             <input
               type="text"
-              placeholder="Search clinical notes..."
+              placeholder="Search notes..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-3 rounded-xl bg-white dark:bg-[#0F172A]/70 border border-slate-200/60 dark:border-transparent text-sm text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500/50 shadow-sm dark:shadow-[0_8px_30px_rgb(0,0,0,0.4)]"
@@ -624,7 +658,7 @@ export default function Home() {
 
         {/* Loading Spinner / Skeleton */}
         {isLoading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6">
             {[1, 2, 3].map(i => (
               <div key={i} className="w-full h-44 rounded-2xl bg-white/40 dark:bg-white/5 border border-slate-200/50 dark:border-white/10 animate-pulse p-6 space-y-4">
                 <div className="h-4 bg-slate-200 dark:bg-neutral-800 rounded w-2/3" />
@@ -637,7 +671,7 @@ export default function Home() {
           </div>
         ) : (
           /* Responsive CSS Card Grid */
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6">
             <AnimatePresence mode="popLayout">
               {filteredNotes.length === 0 ? (
                 <motion.div
@@ -666,17 +700,17 @@ export default function Home() {
                       borderColor: "rgba(59, 130, 246, 0.3)"
                     }}
                     transition={{ type: "spring", stiffness: 350, damping: 25 }}
-                    className="w-full text-left p-6 rounded-2xl bg-white/70 dark:bg-[#0F172A]/70 border border-slate-200/50 dark:border-transparent backdrop-blur-sm flex flex-col gap-4 transition-colors duration-300 cursor-pointer shadow-sm dark:shadow-[0_10px_30px_-10px_rgba(0,0,0,0.6)] relative overflow-hidden group focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    className="w-full text-left p-3 sm:p-6 rounded-2xl bg-white/70 dark:bg-[#0F172A]/70 border border-slate-200/50 dark:border-transparent backdrop-blur-sm flex flex-col gap-2 sm:gap-4 transition-colors duration-300 cursor-pointer shadow-sm dark:shadow-[0_10px_30px_-10px_rgba(0,0,0,0.6)] relative overflow-hidden group focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   >
                     {/* Decorative faint glow */}
                     <div className="absolute inset-0 bg-gradient-to-br from-blue-600/5 to-indigo-600/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
 
-                    <div className="flex items-start justify-between gap-3 relative z-10 w-full">
-                      <span className="font-bold text-sm text-slate-800 dark:text-white leading-tight truncate max-w-[60%] flex items-center gap-1.5">
+                    <div className="flex flex-col gap-1.5 relative z-10 w-full">
+                      <span className="font-bold text-sm text-slate-800 dark:text-white leading-snug line-clamp-1 w-full flex items-center gap-1.5 min-w-0">
                         {note.isLocked && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0 stroke-[2.5]" />}
-                        {note.title || "Untitled Note"}
+                        <span className="truncate">{note.title || "Untitled Note"}</span>
                       </span>
-                      <div className="flex items-center gap-1.5 relative z-25" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-start gap-1.5" onClick={(e) => e.stopPropagation()}>
                         <button
                           onClick={(e) => handleTogglePin(e, note)}
                           className={`p-1 rounded-md transition-colors hover:bg-slate-100 dark:hover:bg-white/10 ${
@@ -688,7 +722,7 @@ export default function Home() {
                         >
                           <Pin className={`w-3.5 h-3.5 ${note.isPinned ? "fill-current" : ""}`} />
                         </button>
-                        <span className="text-[10px] text-slate-400 dark:text-slate-450 whitespace-nowrap flex items-center gap-0.5 mt-0.5">
+                        <span className="text-[10px] text-slate-400 dark:text-slate-450 whitespace-nowrap flex items-center gap-0.5">
                           <Clock className="w-3.5 h-3.5" />
                           {note.updatedAt}
                         </span>
@@ -720,7 +754,7 @@ export default function Home() {
                       )}
                       {note.isLocked && (
                         <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-500">
-                          SECURE
+                          LOCKED
                         </span>
                       )}
                     </div>
@@ -744,6 +778,17 @@ export default function Home() {
           >
             <Plus className="w-4 h-4 stroke-[2.5]" />
             New Note
+          </button>
+
+          {/* Install App — always visible */}
+          <button
+            onClick={handleInstallApp}
+            className="flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-full text-xs font-bold text-blue-600 dark:text-[#3B82F6] bg-blue-50/80 dark:bg-[#3B82F6]/10 hover:bg-blue-100 dark:hover:bg-[#3B82F6]/20 border border-blue-200/50 dark:border-blue-500/20 transition-colors cursor-pointer"
+            style={{ minHeight: "40px" }}
+            title="Install App"
+          >
+            <Download className="w-4 h-4 stroke-[2.5]" />
+            <span className="hidden sm:inline">Install App</span>
           </button>
 
           {/* Search Trigger and Sliding Search Field (Desktop only) */}
@@ -895,7 +940,7 @@ export default function Home() {
                 <p className="text-xs text-slate-400 dark:text-slate-450 leading-relaxed font-medium">
                   {activeNote.pin 
                     ? "Change the 4-digit lock passcode or click Remove to unlock the notepad." 
-                    : "Secure this notepad by locking it. Unlocking will require the 4-digit code."}
+                    : "Lock this note with a 4-digit PIN. You will need the PIN to open it again."}
                 </p>
 
                 <div className="space-y-1.5">
@@ -983,11 +1028,6 @@ export default function Home() {
                     <X className="w-4 h-4" />
                     <span className="hidden sm:inline">Close</span>
                   </button>
-
-                  <span className="text-xs font-bold text-slate-400 dark:text-slate-440 uppercase tracking-wider hidden md:flex items-center gap-1">
-                    <ShieldCheck className="w-3.5 h-3.5 text-blue-600 dark:text-[#3B82F6]" />
-                    Secure Writing Space
-                  </span>
                 </div>
 
                 {/* Right Side: Saving indicator and Actions */}
@@ -1070,7 +1110,7 @@ export default function Home() {
                 type="text"
                 value={activeNote.title}
                 onChange={(e) => handleTitleChange(e.target.value)}
-                placeholder="Untitled Record"
+                placeholder="Untitled Note"
                 className="w-full text-4xl md:text-5xl font-extrabold bg-transparent text-slate-855 dark:text-slate-100 placeholder-slate-200 dark:placeholder-neutral-800 border-none outline-none focus:ring-0 mb-4 p-0"
               />
 
@@ -1082,7 +1122,7 @@ export default function Home() {
                 </div>
                 <span>•</span>
                 <div className="flex items-center gap-1.5">
-                  <span>Notes ID:</span>
+                  <span>Reference:</span>
                   <input
                     type="text"
                     value={activeNote.patientId || ""}
@@ -1100,7 +1140,7 @@ export default function Home() {
               </div>
 
               {/* Premium TipTap Editor Component */}
-              <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+              <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                 <Editor
                   content={activeNote.content}
                   onChange={handleContentChange}
