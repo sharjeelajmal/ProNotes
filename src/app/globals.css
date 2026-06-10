@@ -1,26 +1,101 @@
+@config "../../tailwind.config.ts";
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* Define the custom dark mode variant for next-themes class-based strategy */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Inherit geist font variables or use system fonts */
+  --font-sans: "Inter", var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Roboto Mono, monospace;
+  
+  /* Override backgrounds and sidebar custom transparency */
+  --color-navy-950: #0B1120;
+  --color-slate-50: #F8FAFC;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Global smooth transition for background-color, border-color, and text-color */
+.theme-transition {
+  transition: background-color 0.5s cubic-bezier(0.4, 0, 0.2, 1), 
+              border-color 0.5s cubic-bezier(0.4, 0, 0.2, 1), 
+              color 0.5s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+}
+
+/* Custom scrollbars for the clinical/pro layout */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.25);
+  border-radius: 4px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.45);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(59, 130, 246, 0.35);
+}
+
+/* TipTap Table Styles */
+.ProseMirror table {
+  border-collapse: collapse;
+  margin: 1.5rem 0;
+  overflow: hidden;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.ProseMirror td,
+.ProseMirror th {
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  box-sizing: border-box;
+  min-width: 1em;
+  padding: 8px 12px;
+  position: relative;
+  vertical-align: top;
+  text-align: left;
+}
+
+.dark .ProseMirror td,
+.dark .ProseMirror th {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ProseMirror th {
+  background-color: rgba(0, 0, 0, 0.03);
+  font-weight: bold;
+}
+
+.dark .ProseMirror th {
+  background-color: rgba(255, 255, 255, 0.03);
+}
+
+.ProseMirror .selectedCell:after {
+  background: rgba(59, 130, 246, 0.08);
+  content: "";
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 2;
 }
