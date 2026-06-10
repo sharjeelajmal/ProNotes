@@ -7,6 +7,9 @@ export const metadata: Metadata = {
   description: "A clean, responsive personal notepad for saving important notes.",
 };
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export default function RootLayout({
   children,
 }: Readonly<{

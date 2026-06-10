@@ -20,12 +20,12 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
-  fetchNotesAction, 
-  saveNoteAction, 
-  deleteNoteAction, 
-  fetchLockedNoteAction,
-  togglePinAction
-} from "@/actions/noteActions";
+  fetchNotesApi, 
+  saveNoteApi, 
+  deleteNoteApi, 
+  unlockNoteApi,
+  togglePinApi
+} from "@/lib/notesApi";
 
 interface Note {
   id: string;
@@ -44,6 +44,13 @@ function stripHtml(html: string) {
   return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function formatNoteDate(value: string) {
+  if (!value || value === "Just now") return value || "Just now";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString();
+}
+
 export default function Home() {
   const [notes, setNotes] = React.useState<Note[]>([]);
   const [activeNoteId, setActiveNoteId] = React.useState<string>("");
@@ -53,6 +60,8 @@ export default function Home() {
   const [saveStatus, setSaveStatus] = React.useState<"idle" | "saving" | "saved">("idle");
   const [isDraftDirty, setIsDraftDirty] = React.useState<boolean>(false);
   const [isLoading, setIsLoading] = React.useState<boolean>(true);
+  const [syncError, setSyncError] = React.useState<string>("");
+  const [syncInfo, setSyncInfo] = React.useState<{ database: string; noteCount: number } | null>(null);
 
   // PWA State
   const [deferredPrompt, setDeferredPrompt] = React.useState<any>(null);
@@ -69,37 +78,43 @@ export default function Home() {
   const [newPinValue, setNewPinValue] = React.useState<string>("");
   const [lockSettingsError, setLockSettingsError] = React.useState<string>("");
 
-  // PWA Setup & Service Worker Registration
-  React.useEffect(() => {
-    const registerSW = () => {
-      if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("/sw.js").then(
-          (reg) => console.log("PWA Service Worker registered:", reg.scope),
-          (err) => console.error("PWA Service Worker registration failed:", err)
-        );
-      }
-    };
+  const isEditingRef = React.useRef(false);
+  const isDraftDirtyRef = React.useRef(false);
+  const activeNoteIdRef = React.useRef("");
 
-    if ("serviceWorker" in navigator) {
-      if (document.readyState === "complete") {
-        registerSW();
-      } else {
-        window.addEventListener("load", registerSW);
-      }
+  React.useEffect(() => { isEditingRef.current = isEditing; }, [isEditing]);
+  React.useEffect(() => { isDraftDirtyRef.current = isDraftDirty; }, [isDraftDirty]);
+  React.useEffect(() => { activeNoteIdRef.current = activeNoteId; }, [activeNoteId]);
+
+  // Remove all old cached data on every app load
+  React.useEffect(() => {
+    try {
+      localStorage.removeItem("pronotes_cache");
+      localStorage.removeItem("pronotes_cache_at");
+    } catch {
+      // ignore
     }
 
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.getRegistrations().then((regs) => {
+        regs.forEach((reg) => reg.unregister());
+      });
+    }
+
+    if ("caches" in window) {
+      caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))));
+    }
+  }, []);
+
+  // PWA install prompt only (no service worker caching)
+  React.useEffect(() => {
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e);
     };
 
     window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-    return () => {
-      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-      if ("serviceWorker" in navigator) {
-        window.removeEventListener("load", registerSW);
-      }
-    };
+    return () => window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
   }, []);
 
   const handleInstallApp = async () => {
@@ -118,77 +133,92 @@ export default function Home() {
 
   const fetchIdRef = React.useRef(0);
 
-  // Load notes from localStorage immediately on mount for instant rendering (<1ms)
-  React.useEffect(() => {
-    const cached = localStorage.getItem("pronotes_cache");
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setNotes(parsed);
-          setActiveNoteId(parsed[0].id);
-          setIsLoading(false); // Instantly bypass loading skeletons
-        }
-      } catch (e) {
-        console.error("Failed to parse cached notes:", e);
-      }
+  const reloadFromServer = React.useCallback(async () => {
+    const result = await fetchNotesApi();
+    if (!result.success) {
+      setSyncError(result.error || "Could not load notes from database");
+      console.error("Failed to load notes from DB:", result.error);
+      return result;
     }
+
+    setSyncError("");
+
+    try {
+      const infoRes = await fetch(`/api/sync-info?_=${Date.now()}`, { cache: "no-store" });
+      const info = await infoRes.json();
+      if (info.success) {
+        setSyncInfo({ database: info.database, noteCount: info.noteCount });
+      }
+    } catch {
+      setSyncInfo({ database: "connected", noteCount: result.notes.length });
+    }
+
+    setNotes((prev) => {
+      if (isEditingRef.current && isDraftDirtyRef.current && activeNoteIdRef.current) {
+        const editingId = activeNoteIdRef.current;
+        const localDraft = prev.find((n) => n.id === editingId);
+        if (!localDraft) return result.notes;
+
+        return result.notes.map((serverNote) =>
+          serverNote.id === editingId
+            ? {
+                ...serverNote,
+                title: localDraft.title,
+                content: localDraft.content,
+                tags: localDraft.tags,
+                patientId: localDraft.patientId,
+                pin: localDraft.pin,
+                isPinned: localDraft.isPinned,
+                updatedAt: localDraft.updatedAt,
+              }
+            : serverNote
+        );
+      }
+
+      return result.notes;
+    });
+
+    return result;
   }, []);
 
-  // Fetch all notes from database on mount in background
+  // Always load fresh from MongoDB — no local cache
   React.useEffect(() => {
     const fetchId = ++fetchIdRef.current;
 
     async function loadNotes() {
+      setIsLoading(true);
       try {
-        const cached = localStorage.getItem("pronotes_cache");
-        if (!cached) {
-          setIsLoading(true);
-        }
-        const dbNotes = await fetchNotesAction();
         if (fetchId !== fetchIdRef.current) return;
-
-        setNotes(dbNotes);
-        localStorage.setItem("pronotes_cache", JSON.stringify(dbNotes));
-        if (dbNotes.length > 0) {
-          setActiveNoteId(prev => prev || dbNotes[0].id);
+        const result = await reloadFromServer();
+        if (result.success && result.notes.length > 0) {
+          setActiveNoteId((prev) => prev || result.notes[0].id);
         }
-      } catch (err) {
-        console.error("Failed to load notes from DB:", err);
       } finally {
         if (fetchId === fetchIdRef.current) {
           setIsLoading(false);
         }
       }
     }
-    loadNotes();
-  }, []);
 
-  // Refresh from server when tab becomes visible (keeps devices in sync)
+    loadNotes();
+  }, [reloadFromServer]);
+
+  // Keep in sync: refresh every 10s + when tab becomes visible
   React.useEffect(() => {
-    const refreshNotes = async () => {
+    const refreshNotes = () => {
       if (document.visibilityState !== "visible") return;
-      const fetchId = ++fetchIdRef.current;
-      try {
-        const dbNotes = await fetchNotesAction();
-        if (fetchId !== fetchIdRef.current) return;
-        setNotes(dbNotes);
-        localStorage.setItem("pronotes_cache", JSON.stringify(dbNotes));
-      } catch (err) {
-        console.error("Failed to refresh notes:", err);
-      }
+      void reloadFromServer();
     };
 
+    const interval = window.setInterval(refreshNotes, 10000);
     document.addEventListener("visibilitychange", refreshNotes);
-    return () => document.removeEventListener("visibilitychange", refreshNotes);
-  }, []);
-
-  // Sync state mutations to localStorage automatically
-  React.useEffect(() => {
-    if (!isLoading) {
-      localStorage.setItem("pronotes_cache", JSON.stringify(notes));
-    }
-  }, [notes, isLoading]);
+    window.addEventListener("focus", refreshNotes);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshNotes);
+      window.removeEventListener("focus", refreshNotes);
+    };
+  }, [reloadFromServer]);
 
   const activeNote = notes.find(n => n.id === activeNoteId);
 
@@ -199,7 +229,7 @@ export default function Home() {
     setSaveStatus("saving");
     const timer = setTimeout(async () => {
       try {
-        const response = await saveNoteAction(activeNote.id, {
+        const response = await saveNoteApi(activeNote.id, {
           title: activeNote.title,
           content: activeNote.content,
           tags: activeNote.tags,
@@ -211,24 +241,12 @@ export default function Home() {
         if (response.success && response.note) {
           setSaveStatus("saved");
           setIsDraftDirty(false);
-          
-          const savedNote = response.note;
-          setNotes(prev =>
-            prev.map(note =>
-              note.id === activeNoteId
-                ? { 
-                    ...note, 
-                    id: savedNote.id, 
-                    updatedAt: savedNote.updatedAt 
-                  }
-                : note
-            )
-          );
-          
-          if (activeNoteId !== savedNote.id) {
-            setActiveNoteId(savedNote.id);
+
+          if (activeNoteId !== response.note.id) {
+            setActiveNoteId(response.note.id);
           }
 
+          await reloadFromServer();
           setTimeout(() => setSaveStatus("idle"), 1500);
         }
       } catch (error) {
@@ -238,7 +256,7 @@ export default function Home() {
     }, 1000);
 
     return () => clearTimeout(timer);
-  }, [activeNote?.title, activeNote?.content, activeNote?.patientId, activeNote?.tags, activeNote?.pin, activeNote?.isPinned, isDraftDirty, activeNoteId]);
+  }, [activeNote?.title, activeNote?.content, activeNote?.patientId, activeNote?.tags, activeNote?.pin, activeNote?.isPinned, isDraftDirty, activeNoteId, reloadFromServer]);
 
   // Handle Note Clicks & Lock Prompt Check
   const handleNoteCardClick = (note: Note) => {
@@ -263,16 +281,17 @@ export default function Home() {
       setIsVerifyingPin(true);
       setPinError("");
       try {
-        const response = await fetchLockedNoteAction(pinTargetNoteId, nextVal);
+        const response = await unlockNoteApi(pinTargetNoteId, nextVal);
         if (response.success && response.note) {
+          const unlocked = response.note;
           setNotes(prev =>
             prev.map(note =>
               note.id === pinTargetNoteId
                 ? {
                     ...note,
-                    content: response.note.content,
-                    patientId: response.note.patientId,
-                    pin: response.note.pin,
+                    content: unlocked.content,
+                    patientId: unlocked.patientId,
+                    pin: unlocked.pin,
                     isLocked: true
                   }
                 : note
@@ -281,6 +300,7 @@ export default function Home() {
           setActiveNoteId(pinTargetNoteId);
           setIsEditing(true);
           setPinModalOpen(false);
+          await reloadFromServer();
         } else {
           setPinError(response.error || "Incorrect PIN");
           setPinInputValue("");
@@ -355,7 +375,7 @@ export default function Home() {
     if (!activeNote) return;
     setSaveStatus("saving");
     try {
-      const response = await saveNoteAction(activeNote.id, {
+      const response = await saveNoteApi(activeNote.id, {
         title: activeNote.title,
         content: activeNote.content,
         tags: activeNote.tags,
@@ -367,24 +387,12 @@ export default function Home() {
       if (response.success && response.note) {
         setSaveStatus("saved");
         setIsDraftDirty(false);
-        
-        const savedNote = response.note;
-        setNotes(prev =>
-          prev.map(note =>
-            note.id === activeNoteId
-              ? { 
-                  ...note, 
-                  id: savedNote.id, 
-                  updatedAt: savedNote.updatedAt 
-                }
-              : note
-          )
-        );
-        
-        if (activeNoteId !== savedNote.id) {
-          setActiveNoteId(savedNote.id);
+
+        if (activeNoteId !== response.note.id) {
+          setActiveNoteId(response.note.id);
         }
 
+        await reloadFromServer();
         setTimeout(() => setSaveStatus("idle"), 1500);
       }
     } catch (error) {
@@ -443,7 +451,8 @@ export default function Home() {
     setIsDraftDirty(false);
 
     try {
-      await deleteNoteAction(currentId);
+      await deleteNoteApi(currentId);
+      await reloadFromServer();
     } catch (err) {
       console.error("Failed to delete note:", err);
     }
@@ -457,7 +466,7 @@ export default function Home() {
     }
     setSaveStatus("saving");
     try {
-      const response = await saveNoteAction(activeNoteId, {
+      const response = await saveNoteApi(activeNoteId, {
         title: activeNote?.title || "",
         content: activeNote?.content || "",
         tags: activeNote?.tags || [],
@@ -466,24 +475,13 @@ export default function Home() {
         isPinned: activeNote?.isPinned ?? false,
       });
       if (response.success && response.note) {
-        setNotes(prev =>
-          prev.map(note =>
-            note.id === activeNoteId
-              ? { 
-                  ...note, 
-                  pin: newPinValue, 
-                  isLocked: true, 
-                  id: response.note.id, 
-                  updatedAt: response.note.updatedAt 
-                }
-              : note
-          )
-        );
-        if (activeNoteId !== response.note.id) {
-          setActiveNoteId(response.note.id);
+        const savedNote = response.note;
+        if (activeNoteId !== savedNote.id) {
+          setActiveNoteId(savedNote.id);
         }
         setSaveStatus("saved");
         setIsDraftDirty(false);
+        await reloadFromServer();
         setTimeout(() => setSaveStatus("idle"), 1500);
       }
     } catch (err) {
@@ -496,7 +494,7 @@ export default function Home() {
   const handleRemoveLock = async () => {
     setSaveStatus("saving");
     try {
-      const response = await saveNoteAction(activeNoteId, {
+      const response = await saveNoteApi(activeNoteId, {
         title: activeNote?.title || "",
         content: activeNote?.content || "",
         tags: activeNote?.tags || [],
@@ -505,24 +503,13 @@ export default function Home() {
         isPinned: activeNote?.isPinned ?? false,
       });
       if (response.success && response.note) {
-        setNotes(prev =>
-          prev.map(note =>
-            note.id === activeNoteId
-              ? { 
-                  ...note, 
-                  pin: "", 
-                  isLocked: false, 
-                  id: response.note.id, 
-                  updatedAt: response.note.updatedAt 
-                }
-              : note
-          )
-        );
-        if (activeNoteId !== response.note.id) {
-          setActiveNoteId(response.note.id);
+        const savedNote = response.note;
+        if (activeNoteId !== savedNote.id) {
+          setActiveNoteId(savedNote.id);
         }
         setSaveStatus("saved");
         setIsDraftDirty(false);
+        await reloadFromServer();
         setTimeout(() => setSaveStatus("idle"), 1500);
       }
     } catch (err) {
@@ -542,30 +529,21 @@ export default function Home() {
   // Toggle Pinned Status immediately
   const handleTogglePin = async (e: React.MouseEvent, note: Note) => {
     e.stopPropagation();
-    const targetState = !note.isPinned;
-    
-    // Optimistic UI update
-    setNotes(prev =>
-      prev.map(n =>
-        n.id === note.id
-          ? { ...n, isPinned: targetState }
-          : n
-      )
-    );
 
-    try {
-      await togglePinAction(note.id, targetState);
-    } catch (err) {
-      console.error("Failed to toggle pin:", err);
-      // Revert on failure
-      setNotes(prev =>
-        prev.map(n =>
-          n.id === note.id
-            ? { ...n, isPinned: !targetState }
-            : n
-        )
-      );
+    if (!/^[0-9a-fA-F]{24}$/.test(note.id)) {
+      alert("Please save the note first, then pin it.");
+      return;
     }
+
+    const targetState = !note.isPinned;
+    const result = await togglePinApi(note.id, targetState);
+
+    if (!result.success) {
+      console.error("Failed to toggle pin:", result.error);
+      alert(result.error || "Could not update pin. Please try again.");
+    }
+
+    await reloadFromServer();
   };
 
   // Sort notes: pinned first, then preserve server order
@@ -613,11 +591,19 @@ export default function Home() {
               transition={{ duration: 1.5, repeat: Infinity }}
             />
             <span className="relative text-[10px] text-emerald-600 dark:text-emerald-400 font-bold uppercase tracking-wider">
-              Synced
+              {syncInfo ? `${syncInfo.noteCount} notes · ${syncInfo.database}` : "Live DB"}
             </span>
           </motion.div>
         </div>
       </header>
+
+      {syncError && (
+        <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 -mt-4 mb-2">
+          <div className="rounded-xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-950/30 px-4 py-3 text-xs text-rose-700 dark:text-rose-300">
+            <strong>Database sync failed:</strong> {syncError}
+          </div>
+        </div>
+      )}
 
       {/* Main Grid View */}
       <main className="w-full max-w-6xl mx-auto px-6 flex-1 flex flex-col gap-4">
@@ -724,7 +710,7 @@ export default function Home() {
                         </button>
                         <span className="text-[10px] text-slate-400 dark:text-slate-450 whitespace-nowrap flex items-center gap-0.5">
                           <Clock className="w-3.5 h-3.5" />
-                          {note.updatedAt}
+                          {formatNoteDate(note.updatedAt)}
                         </span>
                       </div>
                     </div>
@@ -1118,7 +1104,7 @@ export default function Home() {
               <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 dark:text-slate-450 mb-8 font-medium">
                 <div className="flex items-center gap-1.5">
                   <Clock className="w-4 h-4" />
-                  <span>Modified: {activeNote.updatedAt}</span>
+                  <span>Modified: {formatNoteDate(activeNote.updatedAt)}</span>
                 </div>
                 <span>•</span>
                 <div className="flex items-center gap-1.5">

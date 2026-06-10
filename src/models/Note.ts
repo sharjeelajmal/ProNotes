@@ -28,4 +28,4 @@ if (models.Note && (!models.Note.schema.paths.pin || !models.Note.schema.paths.i
   delete (models as any).Note;
 }
 
-export const Note = models.Note || model<INote>("Note", NoteSchema);
+export const Note = models.Note || model<INote>("Note", NoteSchema, "notes");

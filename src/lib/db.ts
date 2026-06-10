@@ -1,8 +1,6 @@
 import mongoose from "mongoose";
 import dns from "dns";
 
-// Fix querySrv ECONNREFUSED error on Windows/local development by setting fallback DNS servers
-// if Node falls back to loopback (127.0.0.1) DNS, which does not run a DNS server.
 if (process.env.NODE_ENV === "development") {
   try {
     const servers = dns.getServers();
@@ -14,39 +12,35 @@ if (process.env.NODE_ENV === "development") {
   }
 }
 
-const MONGODB_URI = process.env.MONGODB_URI || "";
-
-if (!MONGODB_URI) {
-  throw new Error("Please define the MONGODB_URI environment variable inside .env");
-}
-
-let cached = (global as any).mongoose;
+let cached = (global as typeof globalThis & { mongoose?: { conn: typeof mongoose | null; promise: Promise<typeof mongoose> | null } }).mongoose;
 
 if (!cached) {
-  cached = (global as any).mongoose = { conn: null, promise: null };
+  cached = (global as typeof globalThis & { mongoose: { conn: typeof mongoose | null; promise: Promise<typeof mongoose> | null } }).mongoose = { conn: null, promise: null };
 }
 
 export async function connectDB() {
-  if (cached.conn) {
-    return cached.conn;
+  const MONGODB_URI = process.env.MONGODB_URI;
+
+  if (!MONGODB_URI) {
+    throw new Error("MONGODB_URI is not configured on the server");
   }
 
-  if (!cached.promise) {
-    const opts = {
-      bufferCommands: false,
-    };
+  if (cached!.conn) {
+    return cached!.conn;
+  }
 
-    cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongooseInstance) => {
-      return mongooseInstance;
+  if (!cached!.promise) {
+    cached!.promise = mongoose.connect(MONGODB_URI, {
+      bufferCommands: false,
     });
   }
 
   try {
-    cached.conn = await cached.promise;
+    cached!.conn = await cached!.promise;
   } catch (e) {
-    cached.promise = null;
+    cached!.promise = null;
     throw e;
   }
 
-  return cached.conn;
+  return cached!.conn;
 }

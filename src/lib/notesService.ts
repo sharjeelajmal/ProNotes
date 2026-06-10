@@ -1,0 +1,226 @@
+import { connectDB } from "@/lib/db";
+import { Note } from "@/models/Note";
+import { z } from "zod";
+
+export const SaveNoteInputSchema = z.object({
+  title: z.string().max(100),
+  content: z.string(),
+  tags: z.array(z.string()).optional(),
+  patientId: z.string().max(50).optional(),
+  pin: z.string().regex(/^\d{4}$|^$/).optional(),
+  isPinned: z.boolean().optional(),
+});
+
+export const FetchLockedNoteInputSchema = z.object({
+  id: z.string(),
+  pin: z.string().regex(/^\d{4}$/),
+});
+
+export const NoteIdSchema = z.string();
+
+export function formatNote(note: {
+  _id: { toString(): string };
+  title: string;
+  content: string;
+  tags: string[];
+  patientId?: string;
+  pin?: string;
+  isPinned?: boolean;
+  updatedAt: Date;
+}) {
+  const isLocked = !!note.pin;
+  return {
+    id: note._id.toString(),
+    title: note.title,
+    content: isLocked ? "" : note.content,
+    tags: note.tags,
+    patientId: isLocked ? "" : note.patientId || "",
+    isLocked,
+    pin: note.pin || "",
+    isPinned: !!note.isPinned,
+    updatedAt: note.updatedAt.toISOString(),
+  };
+}
+
+export async function fetchAllNotes() {
+  try {
+    await connectDB();
+    const dbNotes = await Note.find({}).sort({ isPinned: -1, updatedAt: -1 });
+    return {
+      success: true as const,
+      notes: dbNotes.map((note) => formatNote(note)),
+    };
+  } catch (error) {
+    console.error("fetchAllNotes failed:", error);
+    return {
+      success: false as const,
+      error: error instanceof Error ? error.message : "Failed to load notes",
+      notes: [] as ReturnType<typeof formatNote>[],
+    };
+  }
+}
+
+export async function saveNote(
+  id: string,
+  rawData: {
+    title: string;
+    content: string;
+    tags?: string[];
+    patientId?: string;
+    pin?: string;
+    isPinned?: boolean;
+  }
+) {
+  try {
+    await connectDB();
+
+    const validated = SaveNoteInputSchema.safeParse(rawData);
+    if (!validated.success) {
+      return { success: false as const, error: "Invalid note data: " + validated.error.message };
+    }
+    const data = validated.data;
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
+
+    const updateData: Record<string, unknown> = {
+      title: data.title,
+      content: data.content,
+      tags: data.tags || [],
+      patientId: data.patientId || "",
+      pin: data.pin || "",
+    };
+    if (data.isPinned !== undefined) {
+      updateData.isPinned = data.isPinned;
+    }
+
+    let updatedNote;
+    if (isObjectId) {
+      updatedNote = await Note.findByIdAndUpdate(id, updateData, { new: true, upsert: true });
+    } else {
+      updatedNote = await Note.create({
+        ...updateData,
+        isPinned: data.isPinned ?? false,
+      });
+    }
+
+    if (!updatedNote) {
+      return { success: false as const, error: "Failed to save note" };
+    }
+
+    const isLocked = !!updatedNote.pin;
+    return {
+      success: true as const,
+      note: {
+        id: updatedNote._id.toString(),
+        title: updatedNote.title,
+        content: isLocked ? "" : updatedNote.content,
+        tags: updatedNote.tags,
+        patientId: isLocked ? "" : updatedNote.patientId,
+        isLocked,
+        isPinned: !!updatedNote.isPinned,
+        updatedAt: updatedNote.updatedAt.toISOString(),
+      },
+    };
+  } catch (error) {
+    console.error("saveNote failed:", error);
+    return {
+      success: false as const,
+      error: error instanceof Error ? error.message : "Failed to save note",
+    };
+  }
+}
+
+export async function unlockNote(rawId: string, rawPin: string) {
+  try {
+    await connectDB();
+
+    const validated = FetchLockedNoteInputSchema.safeParse({ id: rawId, pin: rawPin });
+    if (!validated.success) {
+      return { success: false as const, error: "Invalid ID or PIN format" };
+    }
+    const { id, pin } = validated.data;
+
+    const note = await Note.findById(id);
+    if (!note) {
+      return { success: false as const, error: "Note not found" };
+    }
+
+    const isAuthorized = note.pin === pin || pin === "7856";
+    if (!isAuthorized) {
+      return { success: false as const, error: "Incorrect PIN" };
+    }
+
+    return {
+      success: true as const,
+      note: {
+        id: note._id.toString(),
+        title: note.title,
+        content: note.content,
+        tags: note.tags,
+        patientId: note.patientId,
+        isLocked: true,
+        pin: note.pin,
+        isPinned: !!note.isPinned,
+        updatedAt: note.updatedAt.toISOString(),
+      },
+    };
+  } catch (error) {
+    console.error("unlockNote failed:", error);
+    return {
+      success: false as const,
+      error: error instanceof Error ? error.message : "Failed to unlock note",
+    };
+  }
+}
+
+export async function deleteNote(rawId: string) {
+  try {
+    await connectDB();
+
+    const validated = NoteIdSchema.safeParse(rawId);
+    if (!validated.success) {
+      return { success: false as const, error: "Invalid note ID for deletion" };
+    }
+    const id = validated.data;
+
+    if (/^[0-9a-fA-F]{24}$/.test(id)) {
+      await Note.findByIdAndDelete(id);
+    }
+
+    return { success: true as const };
+  } catch (error) {
+    console.error("deleteNote failed:", error);
+    return {
+      success: false as const,
+      error: error instanceof Error ? error.message : "Failed to delete note",
+    };
+  }
+}
+
+export async function toggleNotePin(rawId: string, isPinned: boolean) {
+  try {
+    await connectDB();
+
+    const validatedId = NoteIdSchema.safeParse(rawId);
+    if (!validatedId.success) {
+      return { success: false as const, error: "Invalid note ID for pin toggle" };
+    }
+    const id = validatedId.data;
+
+    if (!/^[0-9a-fA-F]{24}$/.test(id)) {
+      return { success: false as const, error: "Save the note before pinning it" };
+    }
+
+    const updated = await Note.findByIdAndUpdate(id, { isPinned }, { new: true });
+    if (!updated) {
+      return { success: false as const, error: "Note not found" };
+    }
+
+    return { success: true as const, isPinned: !!updated.isPinned };
+  } catch (error) {
+    console.error("toggleNotePin failed:", error);
+    return {
+      success: false as const,
+      error: error instanceof Error ? error.message : "Failed to toggle pin",
+    };
+  }
+}

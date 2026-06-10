@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { ThemeProvider as NextThemesProvider, type ThemeProviderProps } from "next-themes";
-
+//start
 // Suppress the React 19 / Next.js 16 console warning about next-themes injecting inline script tags in development
 if (typeof window !== "undefined" && process.env.NODE_ENV === "development") {
   const origError = console.error;
