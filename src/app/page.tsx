@@ -81,10 +81,67 @@ export default function Home() {
   const isEditingRef = React.useRef(false);
   const isDraftDirtyRef = React.useRef(false);
   const activeNoteIdRef = React.useRef("");
+  const editorHistoryPushedRef = React.useRef(false);
+  const skipPopStateCloseRef = React.useRef(false);
 
   React.useEffect(() => { isEditingRef.current = isEditing; }, [isEditing]);
   React.useEffect(() => { isDraftDirtyRef.current = isDraftDirty; }, [isDraftDirty]);
   React.useEffect(() => { activeNoteIdRef.current = activeNoteId; }, [activeNoteId]);
+
+  const closeEditorWithoutHistory = React.useCallback(() => {
+    const editingId = activeNoteIdRef.current;
+    setIsEditing(false);
+    setIsDraftDirty(false);
+    setLockSettingsOpen(false);
+    if (editingId) {
+      setNotes((prev) => {
+        const note = prev.find((n) => n.id === editingId);
+        if (!note?.pin) return prev;
+        return prev.map((n) =>
+          n.id === editingId ? { ...n, content: "", patientId: "" } : n
+        );
+      });
+    }
+  }, []);
+
+  const closeEditor = React.useCallback(() => {
+    closeEditorWithoutHistory();
+    if (editorHistoryPushedRef.current) {
+      skipPopStateCloseRef.current = true;
+      editorHistoryPushedRef.current = false;
+      window.history.back();
+    }
+  }, [closeEditorWithoutHistory]);
+
+  const openEditor = React.useCallback((noteId: string) => {
+    setActiveNoteId(noteId);
+    setIsEditing(true);
+    if (!editorHistoryPushedRef.current) {
+      window.history.pushState({ pronotesEditor: true, noteId }, "", `/?note=${noteId}`);
+      editorHistoryPushedRef.current = true;
+    }
+  }, []);
+
+  // Seed home history entry so browser back from editor returns home instead of exiting
+  React.useEffect(() => {
+    if (!window.history.state?.pronotesHome && !window.history.state?.pronotesEditor) {
+      window.history.replaceState({ pronotesHome: true }, "", "/");
+    }
+
+    const onPopState = () => {
+      if (skipPopStateCloseRef.current) {
+        skipPopStateCloseRef.current = false;
+        return;
+      }
+      if (isEditingRef.current) {
+        editorHistoryPushedRef.current = false;
+        closeEditorWithoutHistory();
+      }
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [closeEditorWithoutHistory]);
 
   // Remove all old cached data on every app load
   React.useEffect(() => {
@@ -154,7 +211,7 @@ export default function Home() {
     }
 
     setNotes((prev) => {
-      if (isEditingRef.current && isDraftDirtyRef.current && activeNoteIdRef.current) {
+      if (isEditingRef.current && activeNoteIdRef.current) {
         const editingId = activeNoteIdRef.current;
         const localDraft = prev.find((n) => n.id === editingId);
         if (!localDraft) return result.notes;
@@ -266,8 +323,7 @@ export default function Home() {
       setPinError("");
       setPinModalOpen(true);
     } else {
-      setActiveNoteId(note.id);
-      setIsEditing(true);
+      openEditor(note.id);
     }
   };
 
@@ -297,10 +353,8 @@ export default function Home() {
                 : note
             )
           );
-          setActiveNoteId(pinTargetNoteId);
-          setIsEditing(true);
           setPinModalOpen(false);
-          await reloadFromServer();
+          openEditor(pinTargetNoteId);
         } else {
           setPinError(response.error || "Incorrect PIN");
           setPinInputValue("");
@@ -415,9 +469,8 @@ export default function Home() {
       pin: ""
     };
     setNotes(prev => [newNote, ...prev]);
-    setActiveNoteId(tempId);
-    setIsEditing(true);
     setIsDraftDirty(true);
+    openEditor(tempId);
   };
 
   // Delete current note
@@ -447,8 +500,11 @@ export default function Home() {
       setActiveNoteId(updatedNotes[nextIndex].id);
     }
 
-    setIsEditing(false);
-    setIsDraftDirty(false);
+    closeEditorWithoutHistory();
+    if (editorHistoryPushedRef.current) {
+      editorHistoryPushedRef.current = false;
+      window.history.replaceState({ pronotesHome: true }, "", "/");
+    }
 
     try {
       await deleteNoteApi(currentId);
@@ -993,27 +1049,14 @@ export default function Home() {
                 <div className="flex items-center gap-3">
                   {/* Close Overlay Button - UX Standard on Mobile Left */}
                   <button
-                    onClick={() => {
-                      setIsEditing(false);
-                      setIsDraftDirty(false); // Reset dirty state
-                      
-                      // Client-side auto-masking: Remove decrypted content from state on close for security
-                      if (activeNote.pin) {
-                        setNotes(prev =>
-                          prev.map(note =>
-                            note.id === activeNoteId
-                              ? { ...note, content: "", patientId: "" }
-                              : note
-                          )
-                        );
-                      }
-                    }}
+                    onClick={closeEditor}
                     className="h-10 px-3 md:px-4 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-neutral-900 dark:hover:bg-neutral-800 flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-neutral-350 transition-colors cursor-pointer"
                     title="Close editor"
                   >
                     <X className="w-4 h-4" />
                     <span className="hidden sm:inline">Close</span>
                   </button>
+                  <ThemeToggle />
                 </div>
 
                 {/* Right Side: Saving indicator and Actions */}
