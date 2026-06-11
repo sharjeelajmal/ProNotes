@@ -16,7 +16,10 @@ import {
   KeyRound,
   Download,
   Pin,
-  Save
+  Save,
+  Copy,
+  CheckSquare,
+  Square
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
@@ -77,16 +80,28 @@ export default function Home() {
   const [lockSettingsOpen, setLockSettingsOpen] = React.useState<boolean>(false);
   const [newPinValue, setNewPinValue] = React.useState<string>("");
   const [lockSettingsError, setLockSettingsError] = React.useState<string>("");
+  const [selectionMode, setSelectionMode] = React.useState<boolean>(false);
+  const [selectedNoteIds, setSelectedNoteIds] = React.useState<Set<string>>(new Set());
+  const [deleteDialog, setDeleteDialog] = React.useState<{
+    noteIds: string[];
+    title: string;
+    subtitle: string;
+    fromEditor?: boolean;
+  } | null>(null);
+  const [isDeleting, setIsDeleting] = React.useState<boolean>(false);
+  const pendingSwitchNoteIdRef = React.useRef<string | null>(null);
 
   const isEditingRef = React.useRef(false);
   const isDraftDirtyRef = React.useRef(false);
   const activeNoteIdRef = React.useRef("");
   const editorHistoryPushedRef = React.useRef(false);
   const skipPopStateCloseRef = React.useRef(false);
+  const notesRef = React.useRef<Note[]>([]);
 
   React.useEffect(() => { isEditingRef.current = isEditing; }, [isEditing]);
   React.useEffect(() => { isDraftDirtyRef.current = isDraftDirty; }, [isDraftDirty]);
   React.useEffect(() => { activeNoteIdRef.current = activeNoteId; }, [activeNoteId]);
+  React.useEffect(() => { notesRef.current = notes; }, [notes]);
 
   const closeEditorWithoutHistory = React.useCallback(() => {
     const editingId = activeNoteIdRef.current;
@@ -119,7 +134,44 @@ export default function Home() {
     if (!editorHistoryPushedRef.current) {
       window.history.pushState({ pronotesEditor: true, noteId }, "", `/?note=${noteId}`);
       editorHistoryPushedRef.current = true;
+    } else {
+      window.history.replaceState({ pronotesEditor: true, noteId }, "", `/?note=${noteId}`);
     }
+  }, []);
+
+  const applySavedNoteToState = React.useCallback((oldId: string, savedNote: Note) => {
+    setNotes((prev) => {
+      const local = prev.find((n) => n.id === oldId);
+      const merged: Note = {
+        ...savedNote,
+        title: local?.title ?? savedNote.title,
+        content: local?.content || savedNote.content,
+        patientId: local?.patientId || savedNote.patientId,
+        tags: local?.tags ?? savedNote.tags,
+        pin: local?.pin ?? savedNote.pin,
+        isLocked: local?.isLocked ?? savedNote.isLocked,
+        isPinned: local?.isPinned ?? savedNote.isPinned,
+        updatedAt: local?.updatedAt ?? savedNote.updatedAt,
+      };
+      return [merged, ...prev.filter((n) => n.id !== oldId && n.id !== merged.id)];
+    });
+
+    if (activeNoteIdRef.current === oldId) {
+      setActiveNoteId(savedNote.id);
+      if (editorHistoryPushedRef.current) {
+        window.history.replaceState({ pronotesEditor: true, noteId: savedNote.id }, "", `/?note=${savedNote.id}`);
+      }
+    }
+  }, []);
+
+  const maskNoteContent = React.useCallback((noteId: string) => {
+    setNotes((prev) => {
+      const note = prev.find((n) => n.id === noteId);
+      if (!note?.pin) return prev;
+      return prev.map((n) =>
+        n.id === noteId ? { ...n, content: "", patientId: "" } : n
+      );
+    });
   }, []);
 
   // Seed home history entry so browser back from editor returns home instead of exiting
@@ -214,7 +266,13 @@ export default function Home() {
       if (isEditingRef.current && activeNoteIdRef.current) {
         const editingId = activeNoteIdRef.current;
         const localDraft = prev.find((n) => n.id === editingId);
-        if (!localDraft) return result.notes;
+        if (!localDraft) {
+          const unsavedLocal = prev.find((n) => n.id === editingId && n.id.startsWith("temp-"));
+          if (unsavedLocal) {
+            return [unsavedLocal, ...result.notes.filter((n) => n.id !== unsavedLocal.id)];
+          }
+          return result.notes;
+        }
 
         return result.notes.map((serverNote) =>
           serverNote.id === editingId
@@ -298,11 +356,7 @@ export default function Home() {
         if (response.success && response.note) {
           setSaveStatus("saved");
           setIsDraftDirty(false);
-
-          if (activeNoteId !== response.note.id) {
-            setActiveNoteId(response.note.id);
-          }
-
+          applySavedNoteToState(activeNote.id, response.note);
           await reloadFromServer();
           setTimeout(() => setSaveStatus("idle"), 1500);
         }
@@ -313,11 +367,17 @@ export default function Home() {
     }, 1000);
 
     return () => clearTimeout(timer);
-  }, [activeNote?.title, activeNote?.content, activeNote?.patientId, activeNote?.tags, activeNote?.pin, activeNote?.isPinned, isDraftDirty, activeNoteId, reloadFromServer]);
+  }, [activeNote?.title, activeNote?.content, activeNote?.patientId, activeNote?.tags, activeNote?.pin, activeNote?.isPinned, isDraftDirty, activeNoteId, reloadFromServer, applySavedNoteToState]);
 
   // Handle Note Clicks & Lock Prompt Check
   const handleNoteCardClick = (note: Note) => {
-    if (note.isLocked && !note.content) {
+    if (selectionMode) {
+      toggleNoteSelection(note.id);
+      return;
+    }
+
+    if (note.pin && !note.content) {
+      pendingSwitchNoteIdRef.current = null;
       setPinTargetNoteId(note.id);
       setPinInputValue("");
       setPinError("");
@@ -326,6 +386,13 @@ export default function Home() {
       openEditor(note.id);
     }
   };
+
+  const closePinModal = React.useCallback(() => {
+    pendingSwitchNoteIdRef.current = null;
+    setPinModalOpen(false);
+    setPinInputValue("");
+    setPinError("");
+  }, []);
 
   // Lock Verification Digit Inputs (Screen / Keyboard)
   const handlePinDigitPress = async (digit: string) => {
@@ -354,7 +421,11 @@ export default function Home() {
             )
           );
           setPinModalOpen(false);
-          openEditor(pinTargetNoteId);
+          setPinInputValue("");
+          const pendingId = pendingSwitchNoteIdRef.current;
+          pendingSwitchNoteIdRef.current = null;
+          const targetId = pendingId || pinTargetNoteId;
+          openEditor(targetId);
         } else {
           setPinError(response.error || "Incorrect PIN");
           setPinInputValue("");
@@ -378,7 +449,7 @@ export default function Home() {
       } else if (e.key === "Backspace") {
         setPinInputValue(prev => prev.slice(0, -1));
       } else if (e.key === "Escape") {
-        setPinModalOpen(false);
+        closePinModal();
       }
     };
     window.addEventListener("keydown", handlePhysicalKeys);
@@ -441,11 +512,7 @@ export default function Home() {
       if (response.success && response.note) {
         setSaveStatus("saved");
         setIsDraftDirty(false);
-
-        if (activeNoteId !== response.note.id) {
-          setActiveNoteId(response.note.id);
-        }
-
+        applySavedNoteToState(activeNote.id, response.note);
         await reloadFromServer();
         setTimeout(() => setSaveStatus("idle"), 1500);
       }
@@ -469,49 +536,7 @@ export default function Home() {
       pin: ""
     };
     setNotes(prev => [newNote, ...prev]);
-    setIsDraftDirty(true);
     openEditor(tempId);
-  };
-
-  // Delete current note
-  const handleDeleteNote = async () => {
-    if (!activeNote) return;
-    
-    const currentId = activeNote.id;
-    const currentIndex = notes.findIndex(n => n.id === currentId);
-    const updatedNotes = notes.filter(n => n.id !== currentId);
-    
-    if (updatedNotes.length === 0) {
-      const fallbackNote: Note = {
-        id: "temp-" + Date.now(),
-        title: "Untitled Note",
-        content: "",
-        updatedAt: "Just now",
-        tags: ["General"],
-        patientId: "",
-        isLocked: false,
-        pin: ""
-      };
-      setNotes([fallbackNote]);
-      setActiveNoteId(fallbackNote.id);
-    } else {
-      setNotes(updatedNotes);
-      const nextIndex = Math.max(0, currentIndex - 1);
-      setActiveNoteId(updatedNotes[nextIndex].id);
-    }
-
-    closeEditorWithoutHistory();
-    if (editorHistoryPushedRef.current) {
-      editorHistoryPushedRef.current = false;
-      window.history.replaceState({ pronotesHome: true }, "", "/");
-    }
-
-    try {
-      await deleteNoteApi(currentId);
-      await reloadFromServer();
-    } catch (err) {
-      console.error("Failed to delete note:", err);
-    }
   };
 
   // Securely lock note / config PIN dialog
@@ -531,10 +556,7 @@ export default function Home() {
         isPinned: activeNote?.isPinned ?? false,
       });
       if (response.success && response.note) {
-        const savedNote = response.note;
-        if (activeNoteId !== savedNote.id) {
-          setActiveNoteId(savedNote.id);
-        }
+        applySavedNoteToState(activeNoteId, response.note);
         setSaveStatus("saved");
         setIsDraftDirty(false);
         await reloadFromServer();
@@ -559,10 +581,7 @@ export default function Home() {
         isPinned: activeNote?.isPinned ?? false,
       });
       if (response.success && response.note) {
-        const savedNote = response.note;
-        if (activeNoteId !== savedNote.id) {
-          setActiveNoteId(savedNote.id);
-        }
+        applySavedNoteToState(activeNoteId, response.note);
         setSaveStatus("saved");
         setIsDraftDirty(false);
         await reloadFromServer();
@@ -573,6 +592,200 @@ export default function Home() {
     }
     setLockSettingsOpen(false);
     setNewPinValue("");
+  };
+
+  const saveActiveNoteIfDirty = React.useCallback(async () => {
+    if (!isDraftDirtyRef.current || !activeNoteIdRef.current) return;
+    const note = notesRef.current.find((n) => n.id === activeNoteIdRef.current);
+    if (!note) return;
+    try {
+      const response = await saveNoteApi(note.id, {
+        title: note.title,
+        content: note.content,
+        tags: note.tags,
+        patientId: note.patientId,
+        pin: note.pin || "",
+        isPinned: note.isPinned ?? false,
+      });
+      if (response.success && response.note) {
+        setIsDraftDirty(false);
+        applySavedNoteToState(note.id, response.note);
+      }
+    } catch (err) {
+      console.error("Failed to save before switch:", err);
+    }
+  }, [applySavedNoteToState]);
+
+  const switchToNoteInEditor = React.useCallback(async (note: Note) => {
+    if (note.id === activeNoteIdRef.current) return;
+
+    await saveActiveNoteIfDirty();
+    maskNoteContent(activeNoteIdRef.current);
+
+    const needsPin = !!note.pin && !note.content;
+    if (needsPin) {
+      pendingSwitchNoteIdRef.current = note.id;
+      setPinTargetNoteId(note.id);
+      setPinInputValue("");
+      setPinError("");
+      setPinModalOpen(true);
+      return;
+    }
+
+    openEditor(note.id);
+  }, [saveActiveNoteIfDirty, maskNoteContent, openEditor]);
+
+  const openDeleteDialog = (
+    noteIds: string[],
+    options: { title: string; subtitle: string; fromEditor?: boolean }
+  ) => {
+    setDeleteDialog({ noteIds, ...options });
+  };
+
+  const performDelete = async () => {
+    if (!deleteDialog) return;
+
+    const { noteIds, fromEditor } = deleteDialog;
+    setIsDeleting(true);
+
+    try {
+      const wasActive = noteIds.includes(activeNoteIdRef.current);
+
+      if (fromEditor && noteIds.length === 1) {
+        const currentId = noteIds[0];
+        const currentIndex = notesRef.current.findIndex((n) => n.id === currentId);
+        const updatedNotes = notesRef.current.filter((n) => n.id !== currentId);
+
+        if (updatedNotes.length === 0) {
+          const fallbackNote: Note = {
+            id: "temp-" + Date.now(),
+            title: "Untitled Note",
+            content: "",
+            updatedAt: "Just now",
+            tags: ["General"],
+            patientId: "",
+            isLocked: false,
+            pin: "",
+          };
+          setNotes([fallbackNote]);
+          setActiveNoteId(fallbackNote.id);
+        } else {
+          setNotes(updatedNotes);
+          const nextIndex = Math.max(0, currentIndex - 1);
+          setActiveNoteId(updatedNotes[nextIndex].id);
+        }
+      } else {
+        setNotes((prev) => prev.filter((n) => !noteIds.includes(n.id)));
+      }
+
+      setSelectedNoteIds((prev) => {
+        const next = new Set(prev);
+        noteIds.forEach((id) => next.delete(id));
+        return next;
+      });
+      setSelectionMode(false);
+
+      if (wasActive) {
+        closeEditorWithoutHistory();
+        if (editorHistoryPushedRef.current) {
+          editorHistoryPushedRef.current = false;
+          window.history.replaceState({ pronotesHome: true }, "", "/");
+        }
+      }
+
+      await Promise.all(
+        noteIds
+          .filter((id) => !id.startsWith("temp-"))
+          .map((id) => deleteNoteApi(id))
+      );
+      await reloadFromServer();
+    } catch (err) {
+      console.error("Failed to delete:", err);
+    } finally {
+      setIsDeleting(false);
+      setDeleteDialog(null);
+    }
+  };
+
+  const handleDeleteCard = (e: React.MouseEvent, note: Note) => {
+    e.stopPropagation();
+    openDeleteDialog([note.id], {
+      title: "Delete this note?",
+      subtitle: `"${note.title || "Untitled Note"}" will be permanently removed. This cannot be undone.`,
+    });
+  };
+
+  const requestEditorDelete = () => {
+    if (!activeNote) return;
+    openDeleteDialog([activeNote.id], {
+      title: "Delete this note?",
+      subtitle: `"${activeNote.title || "Untitled Note"}" will be permanently removed. This cannot be undone.`,
+      fromEditor: true,
+    });
+  };
+
+  const handleDuplicateNote = async (e: React.MouseEvent, note: Note) => {
+    e.stopPropagation();
+
+    if (note.isLocked && !note.content) {
+      alert("Unlock this note first to duplicate its content.");
+      return;
+    }
+
+    const tempId = "temp-" + Date.now();
+    const duplicate: Note = {
+      id: tempId,
+      title: `${note.title || "Untitled Note"} (Copy)`,
+      content: note.content || "",
+      updatedAt: "Just now",
+      tags: [...(note.tags || [])],
+      patientId: note.patientId || "",
+      isLocked: false,
+      pin: "",
+      isPinned: false,
+    };
+
+    setNotes((prev) => [duplicate, ...prev]);
+
+    try {
+      const response = await saveNoteApi(tempId, {
+        title: duplicate.title,
+        content: duplicate.content,
+        tags: duplicate.tags,
+        patientId: duplicate.patientId,
+        pin: "",
+        isPinned: false,
+      });
+      if (response.success && response.note) {
+        applySavedNoteToState(tempId, response.note);
+        await reloadFromServer();
+      }
+    } catch (err) {
+      console.error("Failed to duplicate note:", err);
+    }
+  };
+
+  const toggleNoteSelection = (noteId: string) => {
+    setSelectedNoteIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(noteId)) next.delete(noteId);
+      else next.add(noteId);
+      return next;
+    });
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedNoteIds.size === 0) return;
+    const count = selectedNoteIds.size;
+    openDeleteDialog([...selectedNoteIds], {
+      title: `Delete ${count} note${count > 1 ? "s" : ""}?`,
+      subtitle: `${count} selected note${count > 1 ? "s" : ""} will be permanently removed. This cannot be undone.`,
+    });
+  };
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelectedNoteIds(new Set());
   };
 
   // Filter notes based on query
@@ -631,6 +844,20 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => {
+              if (selectionMode) exitSelectionMode();
+              else setSelectionMode(true);
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider border transition-colors cursor-pointer ${
+              selectionMode
+                ? "border-blue-300 dark:border-blue-500/40 bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                : "border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5"
+            }`}
+          >
+            {selectionMode ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+            {selectionMode ? "Cancel" : "Select"}
+          </button>
           <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -652,6 +879,23 @@ export default function Home() {
           </motion.div>
         </div>
       </header>
+
+      {selectionMode && selectedNoteIds.size > 0 && (
+        <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 -mt-2 mb-2">
+          <div className="flex items-center justify-between rounded-xl border border-rose-200/60 dark:border-rose-500/30 bg-rose-50/80 dark:bg-rose-950/30 px-4 py-3">
+            <span className="text-xs font-semibold text-rose-700 dark:text-rose-300">
+              {selectedNoteIds.size} note(s) selected
+            </span>
+            <button
+              onClick={handleBulkDelete}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 transition-colors cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete Selected
+            </button>
+          </div>
+        </div>
+      )}
 
       {syncError && (
         <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 -mt-4 mb-2">
@@ -742,32 +986,72 @@ export default function Home() {
                       borderColor: "rgba(59, 130, 246, 0.3)"
                     }}
                     transition={{ type: "spring", stiffness: 350, damping: 25 }}
-                    className="w-full text-left p-3 sm:p-6 rounded-2xl bg-white/70 dark:bg-[#0F172A]/70 border border-slate-200/50 dark:border-transparent backdrop-blur-sm flex flex-col gap-2 sm:gap-4 transition-colors duration-300 cursor-pointer shadow-sm dark:shadow-[0_10px_30px_-10px_rgba(0,0,0,0.6)] relative overflow-hidden group focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    className={`w-full text-left p-3 sm:p-6 rounded-2xl bg-white/70 dark:bg-[#0F172A]/70 border backdrop-blur-sm flex flex-col gap-2 sm:gap-4 transition-colors duration-300 cursor-pointer shadow-sm dark:shadow-[0_10px_30px_-10px_rgba(0,0,0,0.6)] relative overflow-hidden group focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
+                      selectedNoteIds.has(note.id)
+                        ? "border-blue-400 dark:border-blue-500/50 ring-2 ring-blue-400/30"
+                        : "border-slate-200/50 dark:border-transparent"
+                    }`}
                   >
                     {/* Decorative faint glow */}
                     <div className="absolute inset-0 bg-gradient-to-br from-blue-600/5 to-indigo-600/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
 
+                    {selectionMode && (
+                      <div className="absolute top-3 right-3 z-20" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => toggleNoteSelection(note.id)}
+                          className={`w-6 h-6 rounded-md border flex items-center justify-center transition-colors ${
+                            selectedNoteIds.has(note.id)
+                              ? "bg-blue-600 border-blue-600 text-white"
+                              : "border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/80"
+                          }`}
+                          aria-label={selectedNoteIds.has(note.id) ? "Deselect note" : "Select note"}
+                        >
+                          {selectedNoteIds.has(note.id) && <CheckSquare className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    )}
+
                     <div className="flex flex-col gap-1.5 relative z-10 w-full">
-                      <span className="font-bold text-sm text-slate-800 dark:text-white leading-snug line-clamp-1 w-full flex items-center gap-1.5 min-w-0">
+                      <span className="font-bold text-sm text-slate-800 dark:text-white leading-snug line-clamp-1 w-full flex items-center gap-1.5 min-w-0 pr-6">
                         {note.isLocked && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0 stroke-[2.5]" />}
                         <span className="truncate">{note.title || "Untitled Note"}</span>
                       </span>
-                      <div className="flex items-center justify-start gap-1.5" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          onClick={(e) => handleTogglePin(e, note)}
-                          className={`p-1 rounded-md transition-colors hover:bg-slate-100 dark:hover:bg-white/10 ${
-                            note.isPinned 
-                              ? "text-blue-600 dark:text-[#3B82F6]" 
-                              : "text-slate-300 dark:text-slate-600 hover:text-slate-500"
-                          }`}
-                          title={note.isPinned ? "Unpin note from top" : "Pin note to top"}
-                        >
-                          <Pin className={`w-3.5 h-3.5 ${note.isPinned ? "fill-current" : ""}`} />
-                        </button>
-                        <span className="text-[10px] text-slate-400 dark:text-slate-450 whitespace-nowrap flex items-center gap-0.5">
-                          <Clock className="w-3.5 h-3.5" />
-                          {formatNoteDate(note.updatedAt)}
-                        </span>
+                      <div className="flex items-center justify-between gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={(e) => handleTogglePin(e, note)}
+                            className={`p-1 rounded-md transition-colors hover:bg-slate-100 dark:hover:bg-white/10 ${
+                              note.isPinned 
+                                ? "text-blue-600 dark:text-[#3B82F6]" 
+                                : "text-slate-300 dark:text-slate-600 hover:text-slate-500"
+                            }`}
+                            title={note.isPinned ? "Unpin note from top" : "Pin note to top"}
+                          >
+                            <Pin className={`w-3.5 h-3.5 ${note.isPinned ? "fill-current" : ""}`} />
+                          </button>
+                          <span className="text-[10px] text-slate-400 dark:text-slate-450 whitespace-nowrap flex items-center gap-0.5">
+                            <Clock className="w-3.5 h-3.5" />
+                            {formatNoteDate(note.updatedAt)}
+                          </span>
+                        </div>
+                        {!selectionMode && (
+                          <div className="flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => handleDuplicateNote(e, note)}
+                              className="p-1 rounded-md text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
+                              title="Duplicate note"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={(e) => handleDeleteCard(e, note)}
+                              className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors"
+                              title="Delete note"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -873,10 +1157,65 @@ export default function Home() {
         </div>
       </div>
 
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {deleteDialog && (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+            onClick={() => !isDeleting && setDeleteDialog(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 8 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 8 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm rounded-2xl bg-white dark:bg-[#0F172A] border border-slate-200/50 dark:border-white/5 p-6 shadow-2xl"
+            >
+              <div className="flex flex-col items-center text-center gap-4">
+                <div className="w-14 h-14 rounded-full bg-rose-500/10 flex items-center justify-center text-rose-500 ring-4 ring-rose-500/5">
+                  <Trash2 className="w-7 h-7" />
+                </div>
+                <div className="space-y-2">
+                  <h3 className="font-extrabold text-lg text-slate-800 dark:text-white">
+                    {deleteDialog.title}
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed max-w-[280px]">
+                    {deleteDialog.subtitle}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 w-full pt-2">
+                  <button
+                    onClick={() => setDeleteDialog(null)}
+                    disabled={isDeleting}
+                    className="flex-1 h-11 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-300 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    Keep Note
+                  </button>
+                  <button
+                    onClick={() => void performDelete()}
+                    disabled={isDeleting}
+                    className="flex-1 h-11 rounded-xl text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 transition-colors cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  >
+                    {isDeleting ? (
+                      <span className="animate-pulse">Deleting...</span>
+                    ) : (
+                      <>
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Note PIN Authentication Modal */}
       <AnimatePresence>
         {pinModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
@@ -925,7 +1264,7 @@ export default function Home() {
                   </button>
                 ))}
                 <button
-                  onClick={() => setPinModalOpen(false)}
+                  onClick={closePinModal}
                   disabled={isVerifyingPin}
                   className="h-12 rounded-xl text-xs font-bold text-slate-400 dark:text-slate-500 hover:bg-slate-100/50 dark:hover:bg-white/5 transition-all cursor-pointer"
                 >
@@ -954,7 +1293,7 @@ export default function Home() {
       {/* Notepad Lock Settings Dialog */}
       <AnimatePresence>
         {lockSettingsOpen && activeNote && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
@@ -1038,9 +1377,63 @@ export default function Home() {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.25, ease: "easeOut" }}
-            className="fixed inset-0 z-50 bg-[#F8FAFC] dark:bg-[#0B1120] p-4 sm:p-6 md:p-12 flex flex-col overflow-y-auto overflow-x-hidden"
+            className="fixed inset-0 z-50 bg-[#F8FAFC] dark:bg-[#0B1120] flex overflow-hidden"
           >
-            <div className="w-full max-w-4xl mx-auto flex-1 flex flex-col">
+            {/* Notes sidebar — switch without going home */}
+            <aside className="hidden md:flex w-64 lg:w-72 shrink-0 flex-col border-r border-slate-200 dark:border-white/5 bg-white/50 dark:bg-[#0B1120]/95">
+              <div className="p-4 border-b border-slate-200 dark:border-white/5">
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">All Notes</p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                {sortedNotes.map((note) => (
+                  <button
+                    key={note.id}
+                    onClick={() => void switchToNoteInEditor(note)}
+                    className={`w-full text-left p-3 rounded-xl transition-colors cursor-pointer ${
+                      note.id === activeNoteId
+                        ? "bg-blue-50 dark:bg-blue-500/10 border border-blue-200/50 dark:border-blue-500/30"
+                        : "hover:bg-slate-100 dark:hover:bg-white/5 border border-transparent"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {note.isLocked && <Lock className="w-3 h-3 text-amber-500 shrink-0" />}
+                      {note.isPinned && <Pin className="w-3 h-3 text-blue-500 shrink-0 fill-current" />}
+                      <span className="text-sm font-semibold truncate text-slate-800 dark:text-white">
+                        {note.title || "Untitled Note"}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 truncate">
+                      {note.isLocked && !note.content
+                        ? "PIN protected"
+                        : stripHtml(note.content) || "Empty"}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </aside>
+
+            <div className="flex-1 flex flex-col min-w-0 overflow-hidden p-4 sm:p-6 md:p-8">
+            {/* Mobile note switcher strip */}
+            <div className="md:hidden shrink-0 mb-4 -mx-1 overflow-x-auto">
+              <div className="flex gap-2 px-1 pb-1">
+                {sortedNotes.map((note) => (
+                  <button
+                    key={note.id}
+                    onClick={() => void switchToNoteInEditor(note)}
+                    className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold transition-colors cursor-pointer ${
+                      note.id === activeNoteId
+                        ? "bg-blue-600 text-white"
+                        : "bg-slate-100 dark:bg-neutral-900 text-slate-600 dark:text-slate-400"
+                    }`}
+                  >
+                    {note.isLocked && !note.content ? "[Locked] " : ""}
+                    {(note.title || "Untitled").slice(0, 18)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="w-full max-w-4xl mx-auto flex-1 flex flex-col min-h-0">
               
               {/* Overlay Editor Actions Header */}
               <div className="flex items-center justify-between pb-6 border-b border-slate-200 dark:border-white/5 mb-8 shrink-0">
@@ -1124,7 +1517,7 @@ export default function Home() {
 
                   {/* Delete Button */}
                   <button
-                    onClick={handleDeleteNote}
+                    onClick={requestEditorDelete}
                     className="text-xs font-bold text-rose-600 h-10 px-3 rounded-xl hover:bg-rose-50 dark:hover:bg-rose-950/20 cursor-pointer flex items-center justify-center border border-transparent"
                     title="Delete note"
                     aria-label="Delete"
@@ -1171,11 +1564,13 @@ export default function Home() {
               {/* Premium TipTap Editor Component */}
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                 <Editor
+                  key={activeNoteId}
                   content={activeNote.content}
                   onChange={handleContentChange}
                 />
               </div>
 
+            </div>
             </div>
           </motion.div>
         )}
