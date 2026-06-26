@@ -267,14 +267,10 @@ export default function Home() {
         const editingId = activeNoteIdRef.current;
         const localDraft = prev.find((n) => n.id === editingId);
         if (!localDraft) {
-          const unsavedLocal = prev.find((n) => n.id === editingId && n.id.startsWith("temp-"));
-          if (unsavedLocal) {
-            return [unsavedLocal, ...result.notes.filter((n) => n.id !== unsavedLocal.id)];
-          }
           return result.notes;
         }
 
-        return result.notes.map((serverNote) =>
+        const mergedFromServer = result.notes.map((serverNote) =>
           serverNote.id === editingId
             ? {
                 ...serverNote,
@@ -288,6 +284,13 @@ export default function Home() {
               }
             : serverNote
         );
+
+        const editingNoteOnServer = result.notes.some((n) => n.id === editingId);
+        if (!editingNoteOnServer) {
+          return [localDraft, ...mergedFromServer];
+        }
+
+        return mergedFromServer;
       }
 
       return result.notes;
@@ -459,6 +462,8 @@ export default function Home() {
   // Handler for note content editing (TipTap update)
   const handleContentChange = (content: string) => {
     if (!activeNote) return;
+    const isEmptyHtml = !content || content === "<p></p>" || content === "<p><br></p>" || content === "<p><br class=\"ProseMirror-trailingBreak\"></p>";
+    if (isEmptyHtml && !activeNote.content) return;
     setNotes(prev =>
       prev.map(note =>
         note.id === activeNoteId
@@ -1373,204 +1378,156 @@ export default function Home() {
       <AnimatePresence>
         {isEditing && activeNote && (
           <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            transition={{ duration: 0.25, ease: "easeOut" }}
-            className="fixed inset-0 z-50 bg-[#F8FAFC] dark:bg-[#0B1120] flex overflow-hidden"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="fixed inset-0 z-50 flex overflow-hidden bg-[#F1F5F9] dark:bg-[#070B14]"
           >
-            {/* Notes sidebar — switch without going home */}
-            <aside className="hidden md:flex w-64 lg:w-72 shrink-0 flex-col border-r border-slate-200 dark:border-white/5 bg-white/50 dark:bg-[#0B1120]/95">
-              <div className="p-4 border-b border-slate-200 dark:border-white/5">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">All Notes</p>
+            {/* Ambient background */}
+            <div className="pointer-events-none absolute inset-0 overflow-hidden">
+              <div className="absolute -top-32 -right-32 h-96 w-96 rounded-full bg-blue-400/10 blur-3xl dark:bg-blue-600/8" />
+              <div className="absolute -bottom-32 -left-32 h-96 w-96 rounded-full bg-indigo-400/10 blur-3xl dark:bg-indigo-600/8" />
+            </div>
+
+            {/* Notes sidebar */}
+            <aside className="hidden md:flex relative w-56 lg:w-60 shrink-0 flex-col border-r border-slate-200/80 dark:border-white/6 bg-white/70 dark:bg-[#0B1120]/90 backdrop-blur-xl">
+              <div className="px-3 py-2.5 border-b border-slate-200/80 dark:border-white/6">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">Notes</p>
               </div>
-              <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
                 {sortedNotes.map((note) => (
                   <button
                     key={note.id}
                     onClick={() => void switchToNoteInEditor(note)}
-                    className={`w-full text-left p-3 rounded-xl transition-colors cursor-pointer ${
+                    className={`w-full text-left px-2.5 py-2 rounded-lg transition-all cursor-pointer ${
                       note.id === activeNoteId
-                        ? "bg-blue-50 dark:bg-blue-500/10 border border-blue-200/50 dark:border-blue-500/30"
-                        : "hover:bg-slate-100 dark:hover:bg-white/5 border border-transparent"
+                        ? "bg-blue-600/10 dark:bg-blue-500/15 border border-blue-300/40 dark:border-blue-500/30"
+                        : "hover:bg-slate-100/80 dark:hover:bg-white/5 border border-transparent"
                     }`}
                   >
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      {note.isLocked && <Lock className="w-3 h-3 text-amber-500 shrink-0" />}
-                      {note.isPinned && <Pin className="w-3 h-3 text-blue-500 shrink-0 fill-current" />}
-                      <span className="text-sm font-semibold truncate text-slate-800 dark:text-white">
-                        {note.title || "Untitled Note"}
+                    <div className="flex items-center gap-1 min-w-0">
+                      {note.isLocked && <Lock className="w-2.5 h-2.5 text-amber-500 shrink-0" />}
+                      {note.isPinned && <Pin className="w-2.5 h-2.5 text-blue-500 shrink-0 fill-current" />}
+                      <span className="text-xs font-semibold truncate text-slate-800 dark:text-white">
+                        {note.title || "Untitled"}
                       </span>
                     </div>
-                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 truncate">
-                      {note.isLocked && !note.content
-                        ? "PIN protected"
-                        : stripHtml(note.content) || "Empty"}
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-0.5 truncate pl-0.5">
+                      {note.isLocked && !note.content ? "PIN protected" : stripHtml(note.content) || "Empty"}
                     </p>
                   </button>
                 ))}
               </div>
             </aside>
 
-            <div className="flex-1 flex flex-col min-w-0 overflow-hidden p-4 sm:p-6 md:p-8">
-            {/* Mobile note switcher strip */}
-            <div className="md:hidden shrink-0 mb-4 -mx-1 overflow-x-auto">
-              <div className="flex gap-2 px-1 pb-1">
-                {sortedNotes.map((note) => (
-                  <button
-                    key={note.id}
-                    onClick={() => void switchToNoteInEditor(note)}
-                    className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold transition-colors cursor-pointer ${
-                      note.id === activeNoteId
-                        ? "bg-blue-600 text-white"
-                        : "bg-slate-100 dark:bg-neutral-900 text-slate-600 dark:text-slate-400"
-                    }`}
-                  >
-                    {note.isLocked && !note.content ? "[Locked] " : ""}
-                    {(note.title || "Untitled").slice(0, 18)}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="w-full max-w-4xl mx-auto flex-1 flex flex-col min-h-0">
-              
-              {/* Overlay Editor Actions Header */}
-              <div className="flex items-center justify-between pb-6 border-b border-slate-200 dark:border-white/5 mb-8 shrink-0">
-                
-                {/* Left Side: Close Button and Writing Status */}
-                <div className="flex items-center gap-3">
-                  {/* Close Overlay Button - UX Standard on Mobile Left */}
-                  <button
-                    onClick={closeEditor}
-                    className="h-10 px-3 md:px-4 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-neutral-900 dark:hover:bg-neutral-800 flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-neutral-350 transition-colors cursor-pointer"
-                    title="Close editor"
-                  >
-                    <X className="w-4 h-4" />
-                    <span className="hidden sm:inline">Close</span>
-                  </button>
-                  <ThemeToggle />
-                </div>
-
-                {/* Right Side: Saving indicator and Actions */}
-                <div className="flex items-center gap-1.5 sm:gap-2">
-                  <AnimatePresence mode="wait">
-                    {saveStatus === "saving" && (
-                      <motion.span
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        className="text-[10px] sm:text-xs text-slate-450 dark:text-neutral-500 mr-1 sm:mr-2"
-                      >
-                        Saving...
-                      </motion.span>
-                    )}
-                    {saveStatus === "saved" && (
-                      <motion.span
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        className="text-[10px] sm:text-xs text-blue-600 dark:text-[#3B82F6] font-semibold mr-1 sm:mr-2"
-                      >
-                        Saved
-                      </motion.span>
-                    )}
-                  </AnimatePresence>
-
-                  {/* Pin to Top Toggle */}
-                  <button
-                    onClick={(e) => handleTogglePin(e, activeNote)}
-                    className={`h-10 px-3 rounded-xl border flex items-center gap-1.5 text-xs font-bold transition-all cursor-pointer ${
-                      activeNote.isPinned 
-                        ? "border-blue-200/50 bg-blue-500/10 text-blue-600 dark:text-blue-400" 
-                        : "border-slate-250 dark:border-white/5 text-slate-650 dark:text-neutral-450 hover:bg-slate-100 dark:hover:bg-neutral-900"
-                    }`}
-                    title={activeNote.isPinned ? "Unpin note from top" : "Pin note to top"}
-                  >
-                    <Pin className={`w-4 h-4 ${activeNote.isPinned ? "fill-current" : ""}`} />
-                    <span className="hidden sm:inline">{activeNote.isPinned ? "Pinned" : "Pin Note"}</span>
-                  </button>
-
-                  {/* Note Locking Trigger */}
-                  <button
-                    onClick={() => setLockSettingsOpen(true)}
-                    className={`h-10 px-3 rounded-xl border flex items-center gap-1.5 text-xs font-bold transition-all cursor-pointer ${
-                      activeNote.pin 
-                        ? "border-amber-200/50 bg-amber-500/10 text-amber-600 dark:text-amber-400" 
-                        : "border-slate-250 dark:border-white/5 text-slate-650 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-900"
-                    }`}
-                    title={activeNote.pin ? "Change or remove PIN" : "Lock note with 4-digit PIN"}
-                  >
-                    {activeNote.pin ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
-                    <span className="hidden sm:inline">{activeNote.pin ? "Locked" : "Lock Note"}</span>
-                  </button>
-
-                  {/* Save Changes Button */}
-                  <button
-                    onClick={handleSave}
-                    className="h-10 px-3 rounded-xl hover:bg-slate-100 dark:hover:bg-neutral-900 border border-slate-250 dark:border-white/5 cursor-pointer flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-neutral-300"
-                    title="Save note"
-                  >
-                    <Save className="w-4 h-4" />
-                    <span className="hidden sm:inline">Save</span>
-                  </button>
-
-                  {/* Delete Button */}
-                  <button
-                    onClick={requestEditorDelete}
-                    className="text-xs font-bold text-rose-600 h-10 px-3 rounded-xl hover:bg-rose-50 dark:hover:bg-rose-950/20 cursor-pointer flex items-center justify-center border border-transparent"
-                    title="Delete note"
-                    aria-label="Delete"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+            <div className="relative flex-1 flex flex-col min-w-0 overflow-hidden px-3 py-2 sm:px-4 sm:py-3">
+              {/* Mobile note switcher */}
+              <div className="md:hidden shrink-0 mb-2 -mx-1 overflow-x-auto">
+                <div className="flex gap-1.5 px-1">
+                  {sortedNotes.map((note) => (
+                    <button
+                      key={note.id}
+                      onClick={() => void switchToNoteInEditor(note)}
+                      className={`shrink-0 px-2.5 py-1 rounded-full text-[10px] font-semibold transition-colors cursor-pointer ${
+                        note.id === activeNoteId
+                          ? "bg-blue-600 text-white shadow-sm shadow-blue-500/25"
+                          : "bg-white/80 dark:bg-neutral-900/80 text-slate-600 dark:text-slate-400 border border-slate-200/60 dark:border-white/8"
+                      }`}
+                    >
+                      {(note.title || "Untitled").slice(0, 16)}
+                    </button>
+                  ))}
                 </div>
               </div>
 
-              {/* Massive Title */}
-              <input
-                type="text"
-                value={activeNote.title}
-                onChange={(e) => handleTitleChange(e.target.value)}
-                placeholder="Untitled Note"
-                className="w-full text-4xl md:text-5xl font-extrabold bg-transparent text-slate-855 dark:text-slate-100 placeholder-slate-200 dark:placeholder-neutral-800 border-none outline-none focus:ring-0 mb-4 p-0"
-              />
+              <div className="w-full max-w-5xl mx-auto flex-1 flex flex-col min-h-0">
 
-              {/* Details Tag list row */}
-              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 dark:text-slate-450 mb-8 font-medium">
-                <div className="flex items-center gap-1.5">
-                  <Clock className="w-4 h-4" />
-                  <span>Modified: {formatNoteDate(activeNote.updatedAt)}</span>
+                {/* Compact top bar */}
+                <div className="flex items-center justify-between gap-2 pb-2 mb-2 shrink-0 border-b border-slate-200/60 dark:border-white/6">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={closeEditor}
+                      className="h-8 px-2.5 rounded-lg bg-white/80 dark:bg-neutral-900/80 border border-slate-200/60 dark:border-white/8 flex items-center gap-1 text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+                      title="Close editor"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Close</span>
+                    </button>
+                    <ThemeToggle />
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <AnimatePresence mode="wait">
+                      {saveStatus === "saving" && (
+                        <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-[10px] text-slate-400 mr-1">Saving…</motion.span>
+                      )}
+                      {saveStatus === "saved" && (
+                        <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-[10px] text-blue-600 dark:text-blue-400 font-semibold mr-1">Saved</motion.span>
+                      )}
+                    </AnimatePresence>
+
+                    <button onClick={(e) => handleTogglePin(e, activeNote)} title={activeNote.isPinned ? "Unpin" : "Pin"}
+                      className={`h-8 w-8 rounded-lg border flex items-center justify-center cursor-pointer transition-all ${
+                        activeNote.isPinned ? "border-blue-300/50 bg-blue-500/10 text-blue-600" : "border-slate-200/60 dark:border-white/8 text-slate-500 hover:bg-white/80 dark:hover:bg-neutral-900/80"
+                      }`}>
+                      <Pin className={`w-3.5 h-3.5 ${activeNote.isPinned ? "fill-current" : ""}`} />
+                    </button>
+                    <button onClick={() => setLockSettingsOpen(true)} title={activeNote.pin ? "Locked" : "Lock"}
+                      className={`h-8 w-8 rounded-lg border flex items-center justify-center cursor-pointer transition-all ${
+                        activeNote.pin ? "border-amber-300/50 bg-amber-500/10 text-amber-600" : "border-slate-200/60 dark:border-white/8 text-slate-500 hover:bg-white/80 dark:hover:bg-neutral-900/80"
+                      }`}>
+                      {activeNote.pin ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+                    </button>
+                    <button onClick={handleSave} title="Save"
+                      className="h-8 w-8 rounded-lg border border-slate-200/60 dark:border-white/8 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-white/80 dark:hover:bg-neutral-900/80 cursor-pointer">
+                      <Save className="w-3.5 h-3.5" />
+                    </button>
+                    <button onClick={requestEditorDelete} title="Delete"
+                      className="h-8 w-8 rounded-lg flex items-center justify-center text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 cursor-pointer">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
-                <span>•</span>
-                <div className="flex items-center gap-1.5">
-                  <span>Reference:</span>
+
+                {/* Compact title + meta */}
+                <div className="shrink-0 mb-2">
                   <input
                     type="text"
-                    value={activeNote.patientId || ""}
-                    onChange={(e) => handlePatientIdChange(e.target.value)}
-                    placeholder="None"
-                    className="font-mono text-slate-700 dark:text-[#3B82F6] bg-transparent outline-none border-none focus:ring-0 p-0 w-24"
+                    value={activeNote.title}
+                    onChange={(e) => handleTitleChange(e.target.value)}
+                    placeholder="Untitled Note"
+                    className="w-full text-xl sm:text-2xl font-bold bg-transparent text-slate-900 dark:text-slate-100 placeholder-slate-300 dark:placeholder-neutral-700 border-none outline-none focus:ring-0 p-0 leading-tight"
+                  />
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 text-[10px] text-slate-400 dark:text-slate-500">
+                    <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatNoteDate(activeNote.updatedAt)}</span>
+                    <span className="text-slate-300 dark:text-slate-700">|</span>
+                    <span className="flex items-center gap-1">
+                      Ref:
+                      <input
+                        type="text"
+                        value={activeNote.patientId || ""}
+                        onChange={(e) => handlePatientIdChange(e.target.value)}
+                        placeholder="—"
+                        className="font-mono text-slate-600 dark:text-blue-400 bg-transparent outline-none border-none focus:ring-0 p-0 w-16"
+                      />
+                    </span>
+                    {activeNote.tags?.map((t, idx) => (
+                      <span key={idx} className="px-1.5 py-px rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold">{t}</span>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Editor — takes maximum space */}
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                  <Editor
+                    key={activeNoteId}
+                    content={activeNote.content}
+                    onChange={handleContentChange}
                   />
                 </div>
-                <span>•</span>
-                {activeNote.tags && activeNote.tags.map((t, idx) => (
-                  <span key={idx} className="px-2.5 py-0.5 rounded-md bg-blue-50/50 dark:bg-[#3B82F6]/10 text-blue-600 dark:text-[#3B82F6] font-bold">
-                    {t}
-                  </span>
-                ))}
-              </div>
 
-              {/* Premium TipTap Editor Component */}
-              <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                <Editor
-                  key={activeNoteId}
-                  content={activeNote.content}
-                  onChange={handleContentChange}
-                />
               </div>
-
-            </div>
             </div>
           </motion.div>
         )}
