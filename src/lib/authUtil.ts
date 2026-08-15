@@ -19,9 +19,15 @@ export async function getAuthPayload(): Promise<AuthPayload> {
     if (token === "personal") return { portal: "personal", username: "admin", isAdmin: true };
     if (token === "business") return { portal: "business", username: "admin", isAdmin: true };
     
-    // Parse JSON
-    return JSON.parse(token);
+    // Parse JSON safely with URL decoding support
+    const decoded = decodeURIComponent(token);
+    return JSON.parse(decoded);
   } catch {
-    return { portal: "personal", username: "admin", isAdmin: true };
+    try {
+      return JSON.parse(token);
+    } catch {
+      return { portal: "personal", username: "admin", isAdmin: true };
+    }
   }
 }
+

@@ -4,6 +4,11 @@ import type { NextRequest } from "next/server";
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // Never intercept or redirect non-GET requests (such as Server Actions or API POSTs)
+  if (request.method !== "GET" || request.headers.get("next-action")) {
+    return NextResponse.next();
+  }
+
   // Allow static files, manifest, sw, and api
   if (
     pathname.startsWith("/api") ||
@@ -37,6 +42,7 @@ export function proxy(request: NextRequest) {
 
   return NextResponse.next();
 }
+
 
 export const config = {
   matcher: [

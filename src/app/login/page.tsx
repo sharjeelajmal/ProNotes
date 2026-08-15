@@ -42,9 +42,12 @@ export default function LoginPage() {
       const result = await login(formData);
       if (result?.error) {
         setError(result.error);
+      } else if (result?.success) {
+        window.location.href = "/";
       }
     });
   };
+
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50/50 dark:bg-[#0B1120] px-4 pt-24 pb-4 sm:p-4 selection:bg-blue-500/30 overflow-hidden relative font-sans transition-colors duration-500">
