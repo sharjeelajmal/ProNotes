@@ -3,6 +3,9 @@
 import * as React from "react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Editor } from "@/components/Editor";
+import { CategorySelect } from "@/components/CategorySelect";
+import { UserAssignSelect } from "@/components/UserAssignSelect";
+import { UserManagementModal } from "@/components/UserManagementModal";
 import { 
   Plus, 
   Search, 
@@ -19,15 +22,22 @@ import {
   Save,
   Copy,
   CheckSquare,
-  Square
+  Square,
+  LogOut,
+  MoreHorizontal,
+  Users,
+  Loader2
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { logout } from "@/actions/auth";
 import { 
   fetchNotesApi, 
   saveNoteApi, 
   deleteNoteApi, 
   unlockNoteApi,
-  togglePinApi
+  togglePinApi,
+  fetchCategoriesApi,
+  createCategoryApi
 } from "@/lib/notesApi";
 
 interface Note {
@@ -40,6 +50,18 @@ interface Note {
   isLocked?: boolean;
   pin?: string;
   isPinned?: boolean;
+  categoryId?: string;
+  assignedTo?: string[];
+  createdBy?: string;
+  isTrashed?: boolean;
+  comments?: {
+    id: string;
+    username: string;
+    text: string;
+    type?: string;
+    mediaData?: string;
+    createdAt: string;
+  }[];
 }
 
 // Quick helper to strip HTML tags for card grid summaries safely on both SSR and CSR
@@ -54,17 +76,39 @@ function formatNoteDate(value: string) {
   return date.toLocaleDateString();
 }
 
+function getGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  if (hour < 21) return "Good evening";
+  return "Good night";
+}
+
 export default function Home() {
   const [notes, setNotes] = React.useState<Note[]>([]);
   const [activeNoteId, setActiveNoteId] = React.useState<string>("");
   const [isEditing, setIsEditing] = React.useState<boolean>(false);
   const [searchQuery, setSearchQuery] = React.useState<string>("");
   const [showSearch, setShowSearch] = React.useState<boolean>(false);
+  const [sidebarFilter, setSidebarFilter] = React.useState<string>("all");
   const [saveStatus, setSaveStatus] = React.useState<"idle" | "saving" | "saved">("idle");
   const [isDraftDirty, setIsDraftDirty] = React.useState<boolean>(false);
   const [isLoading, setIsLoading] = React.useState<boolean>(true);
   const [syncError, setSyncError] = React.useState<string>("");
-  const [syncInfo, setSyncInfo] = React.useState<{ database: string; noteCount: number } | null>(null);
+  const [syncInfo, setSyncInfo] = React.useState<{ database: string; noteCount: number; portal?: string; isAdmin?: boolean; username?: string } | null>(null);
+  const [categories, setCategories] = React.useState<{id: string, name: string}[]>([]);
+  const [usersList, setUsersList] = React.useState<{id: string, username: string}[]>([]);
+  const [isAddingCategory, setIsAddingCategory] = React.useState(false);
+  const [newCategoryName, setNewCategoryName] = React.useState("");
+  const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
+  const [isUserModalOpen, setIsUserModalOpen] = React.useState<boolean>(false);
+
+  // Close menu on click outside
+  React.useEffect(() => {
+    const handleClick = () => setOpenMenuId(null);
+    document.addEventListener("click", handleClick);
+    return () => document.removeEventListener("click", handleClick);
+  }, []);
 
   // PWA State
   const [deferredPrompt, setDeferredPrompt] = React.useState<any>(null);
@@ -81,6 +125,21 @@ export default function Home() {
   const [newPinValue, setNewPinValue] = React.useState<string>("");
   const [lockSettingsError, setLockSettingsError] = React.useState<string>("");
   const [selectionMode, setSelectionMode] = React.useState<boolean>(false);
+
+  // Chat Panel State
+  const [showChatPanel, setShowChatPanel] = React.useState<boolean>(false);
+  const [chatInput, setChatInput] = React.useState<string>("");
+  const [isSendingComment, setIsSendingComment] = React.useState<boolean>(false);
+  const [chatReadCounts, setChatReadCounts] = React.useState<Record<string, number>>({});
+
+  
+  // Media Chat State
+  const [isRecording, setIsRecording] = React.useState<boolean>(false);
+  const [recordingTime, setRecordingTime] = React.useState<number>(0);
+  const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
+  const audioChunksRef = React.useRef<Blob[]>([]);
+  const recordingTimerRef = React.useRef<any>(null);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const [selectedNoteIds, setSelectedNoteIds] = React.useState<Set<string>>(new Set());
   const [deleteDialog, setDeleteDialog] = React.useState<{
     noteIds: string[];
@@ -131,6 +190,7 @@ export default function Home() {
   const openEditor = React.useCallback((noteId: string) => {
     setActiveNoteId(noteId);
     setIsEditing(true);
+    setShowChatPanel(true);
     if (!editorHistoryPushedRef.current) {
       window.history.pushState({ pronotesEditor: true, noteId }, "", `/?note=${noteId}`);
       editorHistoryPushedRef.current = true;
@@ -149,8 +209,12 @@ export default function Home() {
         patientId: local?.patientId || savedNote.patientId,
         tags: local?.tags ?? savedNote.tags,
         pin: local?.pin ?? savedNote.pin,
+        categoryId: local?.categoryId ?? savedNote.categoryId,
         isLocked: local?.isLocked ?? savedNote.isLocked,
         isPinned: local?.isPinned ?? savedNote.isPinned,
+        assignedTo: local?.assignedTo ?? savedNote.assignedTo,
+        createdBy: local?.createdBy ?? savedNote.createdBy,
+        isTrashed: local?.isTrashed ?? savedNote.isTrashed,
         updatedAt: local?.updatedAt ?? savedNote.updatedAt,
       };
       return [merged, ...prev.filter((n) => n.id !== oldId && n.id !== merged.id)];
@@ -243,11 +307,19 @@ export default function Home() {
   const fetchIdRef = React.useRef(0);
 
   const reloadFromServer = React.useCallback(async () => {
-    const result = await fetchNotesApi();
+    const [result, categoriesResult] = await Promise.all([
+      fetchNotesApi(),
+      fetchCategoriesApi()
+    ]);
+
     if (!result.success) {
       setSyncError(result.error || "Could not load notes from database");
       console.error("Failed to load notes from DB:", result.error);
       return result;
+    }
+
+    if (categoriesResult.success) {
+      setCategories(categoriesResult.categories);
     }
 
     setSyncError("");
@@ -256,7 +328,14 @@ export default function Home() {
       const infoRes = await fetch(`/api/sync-info?_=${Date.now()}`, { cache: "no-store" });
       const info = await infoRes.json();
       if (info.success) {
-        setSyncInfo({ database: info.database, noteCount: info.noteCount });
+        setSyncInfo({ database: info.database, noteCount: info.noteCount, portal: info.portal, isAdmin: info.isAdmin, username: info.username });
+        if (info.portal === 'business') {
+          try {
+            const usersRes = await fetch('/api/users');
+            const usersData = await usersRes.json();
+            if (usersData.success) setUsersList(usersData.users);
+          } catch {}
+        }
       }
     } catch {
       setSyncInfo({ database: "connected", noteCount: result.notes.length });
@@ -278,8 +357,10 @@ export default function Home() {
                 content: localDraft.content,
                 tags: localDraft.tags,
                 patientId: localDraft.patientId,
+                categoryId: localDraft.categoryId,
                 pin: localDraft.pin,
                 isPinned: localDraft.isPinned,
+                assignedTo: localDraft.assignedTo,
                 updatedAt: localDraft.updatedAt,
               }
             : serverNote
@@ -299,6 +380,26 @@ export default function Home() {
     return result;
   }, []);
 
+  // Poll for chat updates when chat panel is open
+  React.useEffect(() => {
+    if (!showChatPanel || !activeNoteId || syncInfo?.portal !== "business") return;
+    const intervalId = setInterval(() => {
+      reloadFromServer();
+    }, 5000);
+    return () => clearInterval(intervalId);
+  }, [showChatPanel, activeNoteId, syncInfo?.portal, reloadFromServer]);
+
+  // Initialize from local storage on mount
+  React.useEffect(() => {
+    try {
+      const stored = localStorage.getItem("pronotes_chat_reads");
+      if (stored) {
+        setChatReadCounts(JSON.parse(stored));
+      }
+    } catch (e) {}
+  }, []);
+
+
   // Always load fresh from MongoDB — no local cache
   React.useEffect(() => {
     const fetchId = ++fetchIdRef.current;
@@ -309,7 +410,16 @@ export default function Home() {
         if (fetchId !== fetchIdRef.current) return;
         const result = await reloadFromServer();
         if (result.success && result.notes.length > 0) {
-          setActiveNoteId((prev) => prev || result.notes[0].id);
+          const urlParams = new URLSearchParams(window.location.search);
+          const urlNoteId = urlParams.get("note");
+          
+          if (urlNoteId && result.notes.some(n => n.id === urlNoteId)) {
+            setActiveNoteId(urlNoteId);
+            setIsEditing(true);
+            setShowChatPanel(true);
+          } else {
+            setActiveNoteId((prev) => prev || result.notes[0].id);
+          }
         }
       } finally {
         if (fetchId === fetchIdRef.current) {
@@ -340,6 +450,21 @@ export default function Home() {
 
   const activeNote = notes.find(n => n.id === activeNoteId);
 
+  // Update when chat panel is open
+  React.useEffect(() => {
+    if (showChatPanel && activeNoteId && activeNote) {
+      const count = activeNote.comments?.length || 0;
+      setChatReadCounts((prev) => {
+        if (prev[activeNoteId] === count) return prev;
+        const next = { ...prev, [activeNoteId]: count };
+        try {
+          localStorage.setItem("pronotes_chat_reads", JSON.stringify(next));
+        } catch (e) {}
+        return next;
+      });
+    }
+  }, [showChatPanel, activeNoteId, activeNote?.comments?.length]);
+
   // Debounced Autosave
   React.useEffect(() => {
     if (!isDraftDirty || !activeNote) return;
@@ -352,8 +477,10 @@ export default function Home() {
           content: activeNote.content,
           tags: activeNote.tags,
           patientId: activeNote.patientId,
+          categoryId: activeNote.categoryId,
           pin: activeNote.pin || "",
           isPinned: activeNote.isPinned ?? false,
+          assignedTo: activeNote.assignedTo || [],
         });
 
         if (response.success && response.note) {
@@ -370,7 +497,7 @@ export default function Home() {
     }, 1000);
 
     return () => clearTimeout(timer);
-  }, [activeNote?.title, activeNote?.content, activeNote?.patientId, activeNote?.tags, activeNote?.pin, activeNote?.isPinned, isDraftDirty, activeNoteId, reloadFromServer, applySavedNoteToState]);
+  }, [activeNote?.title, activeNote?.content, activeNote?.patientId, activeNote?.categoryId, activeNote?.tags, activeNote?.pin, activeNote?.isPinned, isDraftDirty, activeNoteId, reloadFromServer, applySavedNoteToState]);
 
   // Handle Note Clicks & Lock Prompt Check
   const handleNoteCardClick = (note: Note) => {
@@ -500,6 +627,30 @@ export default function Home() {
     setIsDraftDirty(true);
   };
 
+  const handleCategoryIdChange = (categoryId: string) => {
+    if (!activeNote) return;
+    setNotes(prev =>
+      prev.map(note =>
+        note.id === activeNoteId
+          ? { ...note, categoryId, updatedAt: "Just now" }
+          : note
+      )
+    );
+    setIsDraftDirty(true);
+  };
+
+  const handleAssignedToChange = (assignedTo: string[]) => {
+    if (!activeNote) return;
+    setNotes(prev =>
+      prev.map(note =>
+        note.id === activeNoteId
+          ? { ...note, assignedTo, updatedAt: "Just now" }
+          : note
+      )
+    );
+    setIsDraftDirty(true);
+  };
+
   // Save note immediately (manual save)
   const handleSave = async () => {
     if (!activeNote) return;
@@ -510,8 +661,10 @@ export default function Home() {
         content: activeNote.content,
         tags: activeNote.tags,
         patientId: activeNote.patientId,
+        categoryId: activeNote.categoryId,
         pin: activeNote.pin || "",
         isPinned: activeNote.isPinned ?? false,
+        assignedTo: activeNote.assignedTo || [],
       });
 
       if (response.success && response.note) {
@@ -527,16 +680,142 @@ export default function Home() {
     }
   };
 
-  // Create a new note
+  const submitMediaComment = async (text: string, type: string = 'text', mediaData?: string) => {
+    if (!activeNote || (type === 'text' && !text.trim())) return;
+    setIsSendingComment(true);
+    try {
+      const tempComment = {
+        id: "temp-" + Date.now(),
+        username: syncInfo?.username || "You",
+        text: type === 'text' ? text.trim() : text,
+        type,
+        mediaData,
+        createdAt: new Date().toISOString()
+      };
+      
+      setNotes(prev =>
+        prev.map(note =>
+          note.id === activeNoteId
+            ? { ...note, comments: [...(note.comments || []), tempComment] }
+            : note
+        )
+      );
+      
+      if (type === 'text') setChatInput("");
+      
+      const { addCommentApi } = await import("@/lib/notesApi");
+      const res = await addCommentApi(activeNote.id, text, type, mediaData);
+      if (res.success && res.comment) {
+        await reloadFromServer();
+      }
+    } catch (err) {
+      console.error("Failed to send comment:", err);
+    } finally {
+      setIsSendingComment(false);
+    }
+  };
+
+  const handleSendComment = () => {
+    submitMediaComment(chatInput, 'text');
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 800;
+        let width = img.width;
+        let height = img.height;
+        
+        if (width > MAX_WIDTH) {
+          height = Math.round((height * MAX_WIDTH) / width);
+          width = MAX_WIDTH;
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        
+        const base64String = canvas.toDataURL('image/jpeg', 0.7);
+        submitMediaComment('Image', 'image', base64String);
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+      
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = () => {
+          const base64Audio = reader.result as string;
+          submitMediaComment('Voice Note', 'audio', base64Audio);
+        };
+        stream.getTracks().forEach(track => track.stop());
+      };
+      
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+      
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime(prev => {
+          if (prev >= 59) {
+            stopRecording();
+            return 60;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+      
+    } catch (err) {
+      console.error("Microphone access denied or not available", err);
+      alert("Microphone access is required to send voice notes.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+    }
+  };
+
   const handleCreateNote = () => {
     const tempId = "temp-" + Date.now();
+    const defaultCategoryId = ["all", "pinned", "locked", "trash", "general"].includes(sidebarFilter) ? "general" : sidebarFilter;
     const newNote: Note = {
       id: tempId,
       title: "New Note",
       content: "",
       updatedAt: "Just now",
-      tags: ["General"],
+      tags: [],
       patientId: "",
+      categoryId: defaultCategoryId,
       isLocked: false,
       pin: ""
     };
@@ -715,16 +994,20 @@ export default function Home() {
   const handleDeleteCard = (e: React.MouseEvent, note: Note) => {
     e.stopPropagation();
     openDeleteDialog([note.id], {
-      title: "Delete this note?",
-      subtitle: `"${note.title || "Untitled Note"}" will be permanently removed. This cannot be undone.`,
+      title: note.isTrashed ? "Delete this note permanently?" : "Move to trash?",
+      subtitle: note.isTrashed 
+        ? `"${note.title || "Untitled Note"}" will be permanently removed. This cannot be undone.`
+        : `"${note.title || "Untitled Note"}" will be moved to the trash.`,
     });
   };
 
   const requestEditorDelete = () => {
     if (!activeNote) return;
     openDeleteDialog([activeNote.id], {
-      title: "Delete this note?",
-      subtitle: `"${activeNote.title || "Untitled Note"}" will be permanently removed. This cannot be undone.`,
+      title: activeNote.isTrashed ? "Delete this note permanently?" : "Move to trash?",
+      subtitle: activeNote.isTrashed 
+        ? `"${activeNote.title || "Untitled Note"}" will be permanently removed. This cannot be undone.`
+        : `"${activeNote.title || "Untitled Note"}" will be moved to the trash.`,
       fromEditor: true,
     });
   };
@@ -782,9 +1065,12 @@ export default function Home() {
   const handleBulkDelete = () => {
     if (selectedNoteIds.size === 0) return;
     const count = selectedNoteIds.size;
+    const isTrashView = sidebarFilter === "trash";
     openDeleteDialog([...selectedNoteIds], {
-      title: `Delete ${count} note${count > 1 ? "s" : ""}?`,
-      subtitle: `${count} selected note${count > 1 ? "s" : ""} will be permanently removed. This cannot be undone.`,
+      title: isTrashView ? `Delete ${count} note${count > 1 ? "s" : ""} permanently?` : `Move ${count} note${count > 1 ? "s" : ""} to trash?`,
+      subtitle: isTrashView 
+        ? `${count} selected note${count > 1 ? "s" : ""} will be permanently removed. This cannot be undone.`
+        : `${count} selected note${count > 1 ? "s" : ""} will be moved to the trash.`,
     });
   };
 
@@ -822,96 +1108,284 @@ export default function Home() {
 
   // Sort notes: pinned first, then preserve server order
   const sortedNotes = React.useMemo(() => {
-    return [...filteredNotes].sort((a, b) => {
+    let baseNotes = [...filteredNotes];
+    
+    // Handle trash filter specifically
+    if (sidebarFilter === "trash") {
+      baseNotes = baseNotes.filter(n => n.isTrashed);
+    } else {
+      // For all other filters, hide trashed notes
+      baseNotes = baseNotes.filter(n => !n.isTrashed);
+      
+      if (sidebarFilter === "pinned") {
+        baseNotes = baseNotes.filter(n => n.isPinned);
+      } else if (sidebarFilter === "locked") {
+        baseNotes = baseNotes.filter(n => n.pin);
+      } else if (sidebarFilter === "general") {
+        baseNotes = baseNotes.filter(n => !n.categoryId || n.categoryId === "general");
+      } else if (sidebarFilter !== "all") {
+        baseNotes = baseNotes.filter(n => n.categoryId === sidebarFilter);
+      }
+    }
+
+    return baseNotes.sort((a, b) => {
       const pinA = a.isPinned ? 1 : 0;
       const pinB = b.isPinned ? 1 : 0;
       return pinB - pinA;
     });
-  }, [filteredNotes]);
+  }, [filteredNotes, sidebarFilter]);
+
+  const navLinks = [
+    { id: "all", label: "All Notes", icon: FileText },
+    { id: "pinned", label: "Pinned", icon: Pin },
+    { id: "locked", label: "Locked", icon: Lock },
+    { id: "trash", label: "Trash", icon: Trash2 },
+  ];
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#0B1120] text-slate-900 dark:text-slate-100 flex flex-col relative pb-32 transition-colors duration-500 font-sans">
+    <div className="h-screen bg-[#F8FAFC] dark:bg-[#0B1120] text-slate-900 dark:text-slate-100 flex overflow-hidden transition-colors duration-500 font-sans">
       
-      {/* Dashboard Top Header */}
-      <header className="w-full max-w-6xl mx-auto py-6 md:py-12 px-4 sm:px-6 flex items-center justify-between gap-4">
-        <div className="flex flex-col gap-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-blue-600 dark:bg-[#3B82F6] flex items-center justify-center shadow-lg shadow-blue-500/20 shrink-0">
-              <FileText className="w-4 h-4 text-white stroke-[2.5]" />
+      {/* Sidebar */}
+      <aside className="w-64 border-r border-slate-200/60 dark:border-white/10 flex flex-col justify-between shrink-0 bg-white/50 dark:bg-[#0F172A]/50 backdrop-blur-xl hidden md:flex z-20">
+        <div className="flex flex-col">
+          {/* Logo Area */}
+          <div className="p-6 flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-blue-600 dark:bg-blue-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
+              <FileText className="w-4.5 h-4.5 text-white stroke-[2.5]" />
             </div>
-            <span className="font-extrabold text-xl tracking-tight text-slate-800 dark:text-white truncate">
-              ProNotes
-            </span>
+            <div className="flex flex-col">
+              <span className="font-extrabold text-xl tracking-tight text-slate-900 dark:text-white leading-none truncate max-w-[150px]">
+                {syncInfo?.portal === 'business' ? (syncInfo.username || 'Notebook') : 'ProNotes'}
+              </span>
+              <span className="text-[10px] text-slate-400 font-semibold mt-1 capitalize">{syncInfo?.portal === 'business' ? 'Business Workspace' : 'Personal Workspace'}</span>
+            </div>
           </div>
-          <p className="text-xs text-slate-400 dark:text-slate-450 font-medium">
-            Personal Notes
-          </p>
+
+          {/* Navigation Links */}
+          <nav className="px-4 mt-2 flex flex-col gap-1 relative" onMouseLeave={() => {}}>
+            {navLinks.map((item) => {
+              const active = sidebarFilter === item.id;
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setSidebarFilter(item.id as any)}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold transition-colors cursor-pointer relative z-10 group ${
+                    active ? "text-white" : "text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white"
+                  }`}
+                >
+                  {active && (
+                    <motion.div
+                      layoutId="sidebarActiveBg"
+                      className="absolute inset-0 bg-blue-600 rounded-xl shadow-md shadow-blue-500/20 -z-10"
+                      transition={{ type: "spring", stiffness: 350, damping: 25 }}
+                    />
+                  )}
+                  <Icon className={`w-4 h-4 transition-transform ${active ? "scale-110" : "group-hover:scale-110"}`} />
+                  {item.label}
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="my-5 border-t border-slate-200/60 dark:border-white/10 mx-4" />
+
+          {/* Categories */}
+          <div className="px-4">
+            <div className="flex items-center justify-between px-2 mb-2 group">
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest transition-colors group-hover:text-slate-500 dark:group-hover:text-slate-300">Categories</span>
+              <button onClick={() => setIsAddingCategory(true)} className="text-slate-400 hover:text-slate-600 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-white/10 p-1 rounded-md transition-all opacity-0 group-hover:opacity-100 cursor-pointer">
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            
+            <AnimatePresence>
+              {isAddingCategory && (
+                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden mb-2">
+                  <div className="flex items-center gap-2 px-2 py-1">
+                    <input 
+                      autoFocus
+                      type="text" 
+                      placeholder="Category name"
+                      value={newCategoryName}
+                      onChange={e => setNewCategoryName(e.target.value)}
+                      onKeyDown={async e => {
+                        if (e.key === 'Enter' && newCategoryName.trim()) {
+                          const res = await createCategoryApi(newCategoryName.trim());
+                          if (res.success && res.category) {
+                            setCategories(prev => [...prev, res.category!]);
+                            setNewCategoryName("");
+                            setIsAddingCategory(false);
+                          }
+                        } else if (e.key === 'Escape') {
+                          setIsAddingCategory(false);
+                          setNewCategoryName("");
+                        }
+                      }}
+                      className="w-full bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-md px-2 py-1.5 text-xs text-slate-800 dark:text-slate-200 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto editor-scroll-body">
+              <div 
+                onClick={() => setSidebarFilter("general")}
+                className={`flex items-center justify-between px-4 py-2.5 rounded-xl text-sm font-semibold transition-all cursor-pointer group ${sidebarFilter === "general" ? "bg-blue-50 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400" : "bg-transparent hover:bg-slate-100 dark:hover:bg-white/5 text-slate-600 dark:text-slate-300"}`}
+              >
+                <span className="group-hover:translate-x-1 transition-transform">General</span>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md transition-colors ${sidebarFilter === "general" ? "bg-white dark:bg-[#0B1120] text-blue-600 dark:text-blue-400 shadow-sm border border-blue-100 dark:border-blue-500/20" : "bg-slate-200/50 dark:bg-white/10 text-slate-500 dark:text-slate-400 group-hover:bg-blue-100 dark:group-hover:bg-blue-500/20 group-hover:text-blue-600 dark:group-hover:text-blue-400"}`}>
+                  {notes.filter(n => !n.categoryId || n.categoryId === "general").length}
+                </span>
+              </div>
+              
+              {categories.map(cat => (
+                <div 
+                  key={cat.id}
+                  onClick={() => setSidebarFilter(cat.id)}
+                  className={`flex items-center justify-between px-4 py-2.5 rounded-xl text-sm font-semibold transition-all cursor-pointer group ${sidebarFilter === cat.id ? "bg-blue-50 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400" : "bg-transparent hover:bg-slate-100 dark:hover:bg-white/5 text-slate-600 dark:text-slate-300"}`}
+                >
+                  <span className="group-hover:translate-x-1 transition-transform truncate mr-2">{cat.name}</span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md transition-colors ${sidebarFilter === cat.id ? "bg-white dark:bg-[#0B1120] text-blue-600 dark:text-blue-400 shadow-sm border border-blue-100 dark:border-blue-500/20" : "bg-slate-200/50 dark:bg-white/10 text-slate-500 dark:text-slate-400 group-hover:bg-blue-100 dark:group-hover:bg-blue-500/20 group-hover:text-blue-600 dark:group-hover:text-blue-400"}`}>
+                    {notes.filter(n => n.categoryId === cat.id).length}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => {
-              if (selectionMode) exitSelectionMode();
-              else setSelectionMode(true);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider border transition-colors cursor-pointer ${
-              selectionMode
-                ? "border-blue-300 dark:border-blue-500/40 bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                : "border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5"
-            }`}
-          >
-            {selectionMode ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
-            {selectionMode ? "Cancel" : "Select"}
-          </button>
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-emerald-200/60 dark:border-emerald-500/20 bg-emerald-50/60 dark:bg-emerald-500/10 overflow-hidden"
-          >
-            <motion.span
-              className="absolute inset-0 bg-gradient-to-r from-transparent via-emerald-400/20 to-transparent"
-              animate={{ x: ["-100%", "200%"] }}
-              transition={{ duration: 2.5, repeat: Infinity, ease: "linear" }}
-            />
-            <motion.span
-              className="relative w-2 h-2 rounded-full bg-emerald-500"
-              animate={{ scale: [1, 1.3, 1], opacity: [1, 0.7, 1] }}
-              transition={{ duration: 1.5, repeat: Infinity }}
-            />
-            <span className="relative text-[10px] text-emerald-600 dark:text-emerald-400 font-bold uppercase tracking-wider">
-              {syncInfo ? `${syncInfo.noteCount} notes · ${syncInfo.database}` : "Live DB"}
-            </span>
-          </motion.div>
-        </div>
-      </header>
-
-      {selectionMode && selectedNoteIds.size > 0 && (
-        <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 -mt-2 mb-2">
-          <div className="flex items-center justify-between rounded-xl border border-rose-200/60 dark:border-rose-500/30 bg-rose-50/80 dark:bg-rose-950/30 px-4 py-3">
-            <span className="text-xs font-semibold text-rose-700 dark:text-rose-300">
-              {selectedNoteIds.size} note(s) selected
-            </span>
+        {/* User Profile */}
+        <div className="p-4 border-t border-slate-200/60 dark:border-white/10 flex flex-col gap-2">
+          {syncInfo?.portal === 'business' && syncInfo?.isAdmin && (
             <button
-              onClick={handleBulkDelete}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 transition-colors cursor-pointer"
+              onClick={() => setIsUserModalOpen(true)}
+              className="flex items-center gap-3 p-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors w-full"
             >
-              <Trash2 className="w-3.5 h-3.5" />
-              Delete Selected
+              <div className="w-9 h-9 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                <Users className="w-4 h-4" />
+              </div>
+              <span className="font-semibold text-sm">Manage Users</span>
+            </button>
+          )}
+
+          <div className="flex items-center gap-3 p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-white/5 transition-colors cursor-pointer group">
+            <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 text-white flex items-center justify-center font-bold text-sm shadow-md group-hover:shadow-blue-500/30 transition-shadow">
+              {syncInfo?.portal === 'business' && syncInfo?.username ? syncInfo.username.charAt(0).toUpperCase() : 'N'}
+            </div>
+            <div className="flex flex-col min-w-0 flex-1">
+              <span className="font-bold text-sm text-slate-900 dark:text-white truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                {syncInfo?.portal === 'business' && syncInfo?.username ? syncInfo.username : 'Notebook'}
+              </span>
+              <span className="text-[10px] text-slate-500 font-semibold truncate capitalize">{syncInfo?.portal === 'business' ? 'Business Workspace' : 'Personal Workspace'}</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col min-w-0 h-full relative">
+        
+        {/* Dashboard Top Header */}
+        <header className="w-full px-8 py-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shrink-0 bg-transparent relative z-10">
+          <div className="flex flex-col gap-1 min-w-0">
+            <h1 className="font-extrabold text-2xl tracking-tight text-slate-800 dark:text-white flex items-center gap-2">
+              {getGreeting()}, {syncInfo?.portal === 'business' && syncInfo?.username ? syncInfo.username : 'Notebook'} 👋
+            </h1>
+            <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">
+              You have {notes.length} notes in your workspace
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3 shrink-0">
+            {/* Search Bar matching image */}
+            <div className="relative hidden md:block w-64">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search notes..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-10 py-2.5 rounded-full bg-white dark:bg-[#0F172A] border border-slate-200 dark:border-white/10 text-sm text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 shadow-sm"
+              />
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+                <kbd className="px-1.5 py-0.5 text-[10px] font-sans font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 rounded border border-slate-200 dark:border-slate-700">⌘K</kbd>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                if (selectionMode) exitSelectionMode();
+                else setSelectionMode(true);
+              }}
+              className={`flex items-center gap-1.5 px-4 py-2.5 rounded-full text-xs font-bold uppercase tracking-wider border transition-colors shadow-sm cursor-pointer ${
+                selectionMode
+                  ? "border-blue-300 bg-blue-50 text-blue-600 dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-400"
+                  : "border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5 bg-white dark:bg-[#0F172A]"
+              }`}
+            >
+              {selectionMode ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+              {selectionMode ? "Cancel" : "Select"}
+            </button>
+            
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="relative flex items-center gap-2 px-4 py-2.5 rounded-full border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-500/10 shadow-sm overflow-hidden"
+            >
+              <motion.span
+                className="relative w-2.5 h-2.5 rounded-full bg-emerald-500"
+                animate={{ scale: [1, 1.3, 1], opacity: [1, 0.7, 1] }}
+                transition={{ duration: 1.5, repeat: Infinity }}
+              />
+              <span className="relative text-xs text-emerald-600 dark:text-emerald-400 font-bold tracking-wide">
+                {notes.length} Notes
+              </span>
+            </motion.div>
+            
+            <button
+              onClick={() => {
+                React.startTransition(() => {
+                  logout();
+                });
+              }}
+              className="flex items-center justify-center w-10 h-10 rounded-full border border-slate-200 dark:border-white/10 bg-white dark:bg-[#0F172A] text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-colors shadow-sm"
+              title="Logout"
+            >
+              <LogOut className="w-4 h-4" />
             </button>
           </div>
-        </div>
-      )}
+        </header>
 
-      {syncError && (
-        <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 -mt-4 mb-2">
-          <div className="rounded-xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-950/30 px-4 py-3 text-xs text-rose-700 dark:text-rose-300">
-            <strong>Database sync failed:</strong> {syncError}
+        {selectionMode && selectedNoteIds.size > 0 && (
+          <div className="w-full px-8 -mt-2 mb-2 shrink-0">
+            <div className="flex items-center justify-between rounded-xl border border-rose-200/60 dark:border-rose-500/30 bg-rose-50/80 dark:bg-rose-950/30 px-4 py-3">
+              <span className="text-xs font-semibold text-rose-700 dark:text-rose-300">
+                {selectedNoteIds.size} note(s) selected
+              </span>
+              <button
+                onClick={handleBulkDelete}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 transition-colors cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete Selected
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Main Grid View */}
-      <main className="w-full max-w-6xl mx-auto px-6 flex-1 flex flex-col gap-4">
+        {syncError && (
+          <div className="w-full px-8 -mt-4 mb-2 shrink-0">
+            <div className="rounded-xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-950/30 px-4 py-3 text-xs text-rose-700 dark:text-rose-300">
+              <strong>Database sync failed:</strong> {syncError}
+            </div>
+          </div>
+        )}
+
+        {/* Scrollable Main Grid */}
+        <main className="flex-1 overflow-y-auto px-8 pb-32">
+
         
         {/* Mobile-Only Search Bar Pinned at Top */}
         <div className="w-full md:hidden mb-4">
@@ -991,14 +1465,14 @@ export default function Home() {
                       borderColor: "rgba(59, 130, 246, 0.3)"
                     }}
                     transition={{ type: "spring", stiffness: 350, damping: 25 }}
-                    className={`w-full text-left p-3 sm:p-6 rounded-2xl bg-white/70 dark:bg-[#0F172A]/70 border backdrop-blur-sm flex flex-col gap-2 sm:gap-4 transition-colors duration-300 cursor-pointer shadow-sm dark:shadow-[0_10px_30px_-10px_rgba(0,0,0,0.6)] relative overflow-hidden group focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
+                    className={`w-full text-left p-5 sm:p-6 rounded-3xl bg-white dark:bg-[#0F172A] border flex flex-col gap-3 sm:gap-4 transition-all duration-300 cursor-pointer shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] dark:shadow-[0_10px_30px_-10px_rgba(0,0,0,0.6)] relative group focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
                       selectedNoteIds.has(note.id)
                         ? "border-blue-400 dark:border-blue-500/50 ring-2 ring-blue-400/30"
-                        : "border-slate-200/50 dark:border-transparent"
+                        : "border-slate-100 dark:border-white/5"
                     }`}
                   >
                     {/* Decorative faint glow */}
-                    <div className="absolute inset-0 bg-gradient-to-br from-blue-600/5 to-indigo-600/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
+                    <div className="absolute inset-0 rounded-3xl bg-gradient-to-br from-blue-600/5 to-indigo-600/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
 
                     {selectionMode && (
                       <div className="absolute top-3 right-3 z-20" onClick={(e) => e.stopPropagation()}>
@@ -1017,15 +1491,11 @@ export default function Home() {
                     )}
 
                     <div className="flex flex-col gap-1.5 relative z-10 w-full">
-                      <span className="font-bold text-sm text-slate-800 dark:text-white leading-snug line-clamp-1 w-full flex items-center gap-1.5 min-w-0 pr-6">
-                        {note.isLocked && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0 stroke-[2.5]" />}
-                        <span className="truncate">{note.title || "Untitled Note"}</span>
-                      </span>
-                      <div className="flex items-center justify-between gap-1.5" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-1.5">
+                      <div className="flex items-start justify-between w-full">
+                        <span className="font-bold text-sm text-slate-800 dark:text-white leading-snug line-clamp-1 flex items-center gap-2 min-w-0 pr-2">
                           <button
                             onClick={(e) => handleTogglePin(e, note)}
-                            className={`p-1 rounded-md transition-colors hover:bg-slate-100 dark:hover:bg-white/10 ${
+                            className={`transition-colors ${
                               note.isPinned 
                                 ? "text-blue-600 dark:text-[#3B82F6]" 
                                 : "text-slate-300 dark:text-slate-600 hover:text-slate-500"
@@ -1034,58 +1504,111 @@ export default function Home() {
                           >
                             <Pin className={`w-3.5 h-3.5 ${note.isPinned ? "fill-current" : ""}`} />
                           </button>
-                          <span className="text-[10px] text-slate-400 dark:text-slate-450 whitespace-nowrap flex items-center gap-0.5">
-                            <Clock className="w-3.5 h-3.5" />
-                            {formatNoteDate(note.updatedAt)}
-                          </span>
-                        </div>
+                          <span className="truncate">{note.title || "Untitled Note"}</span>
+                        </span>
+                        
                         {!selectionMode && (
-                          <div className="flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                          <div className="relative flex items-center gap-0.5 shrink-0 opacity-40 hover:opacity-100 transition-opacity">
                             <button
-                              onClick={(e) => handleDuplicateNote(e, note)}
-                              className="p-1 rounded-md text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
-                              title="Duplicate note"
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                e.nativeEvent.stopImmediatePropagation();
+                                setOpenMenuId(openMenuId === note.id ? null : note.id);
+                              }}
+                              className="p-1 rounded-md text-slate-500 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
                             >
-                              <Copy className="w-3.5 h-3.5" />
+                              <MoreHorizontal className="w-4 h-4" />
                             </button>
-                            <button
-                              onClick={(e) => handleDeleteCard(e, note)}
-                              className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors"
-                              title="Delete note"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            <AnimatePresence>
+                              {openMenuId === note.id && (
+                                <motion.div
+                                  initial={{ opacity: 0, scale: 0.95, y: -5 }}
+                                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                                  exit={{ opacity: 0, scale: 0.95, y: -5 }}
+                                  transition={{ duration: 0.15 }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="absolute right-0 top-full mt-1.5 w-32 bg-white dark:bg-[#1E293B] border border-slate-200/80 dark:border-white/10 rounded-xl shadow-xl shadow-slate-200/40 dark:shadow-black/40 z-50 overflow-hidden flex flex-col py-1"
+                                >
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleTogglePin(e, note);
+                                      setOpenMenuId(null);
+                                    }}
+                                    className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 flex items-center gap-2 transition-colors w-full text-left"
+                                  >
+                                    <Pin className="w-3.5 h-3.5" />
+                                    {note.isPinned ? "Unpin Note" : "Pin Note"}
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDeleteDialog({
+                                        noteIds: [note.id],
+                                        title: note.isTrashed ? "Delete permanently?" : "Move to trash?",
+                                        subtitle: note.isTrashed 
+                                          ? "Are you sure you want to permanently delete this note? This action cannot be undone."
+                                          : "This note will be moved to the trash."
+                                      });
+                                      setOpenMenuId(null);
+                                    }}
+                                    className="px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 flex items-center gap-2 transition-colors w-full text-left"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    {note.isTrashed ? "Delete Permanently" : "Move to Trash"}
+                                  </button>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
                           </div>
+                        )}
+                      </div>
+                      
+                      <div className="flex items-center gap-3 mt-0.5">
+                        <span className="text-[10px] text-slate-400 dark:text-slate-450 whitespace-nowrap flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          {formatNoteDate(note.updatedAt)}
+                        </span>
+                        {note.createdBy && syncInfo?.portal === 'business' && (
+                          <span className="text-[10px] text-indigo-500/80 dark:text-indigo-400/80 whitespace-nowrap font-medium">
+                            By {note.createdBy}
+                          </span>
                         )}
                       </div>
                     </div>
 
                     {note.isLocked && !note.content ? (
                       <div className="flex items-center gap-2 text-amber-500/80 dark:text-amber-500/70 text-xs font-semibold py-1">
-                        <Lock className="w-3.5 h-3.5 stroke-[2.5]" />
-                        <span>Notepad PIN Protected</span>
+                        <span className="text-amber-500 font-bold">Notepad PIN Protected</span>
                       </div>
                     ) : (
-                      <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-3 leading-relaxed relative z-10">
+                      <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-3 leading-relaxed relative z-10 font-medium">
                         {stripHtml(note.content) || "Empty note content..."}
                       </p>
                     )}
 
-                    <div className="flex flex-wrap items-center gap-2 mt-2 relative z-10">
+                    <div className="flex flex-wrap items-center gap-2 mt-auto pt-2 relative z-10">
+                      {note.assignedTo && note.assignedTo.map((u, idx) => (
+                        <span key={`assign-${idx}`} className="text-[9px] font-bold px-2 py-1 rounded-md bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5" title="Assigned User">
+                          <Users className="w-2.5 h-2.5" />
+                          {u}
+                        </span>
+                      ))}
                       {note.tags && note.tags.map((t, idx) => (
-                        <span key={idx} className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-slate-200/40 dark:bg-white/5 text-slate-500 dark:text-slate-350 flex items-center gap-1">
+                        <span key={idx} className="text-[9px] font-bold px-2 py-1 rounded-md bg-blue-50/50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
                           <Tag className="w-2.5 h-2.5" />
                           {t}
                         </span>
                       ))}
                       {!note.isLocked && note.patientId && (
-                        <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-md bg-blue-50 dark:bg-[#3B82F6]/10 text-blue-600 dark:text-[#3B82F6]">
+                        <span className="text-[9px] font-mono font-bold px-2 py-1 rounded-md bg-blue-50 dark:bg-[#3B82F6]/10 text-blue-600 dark:text-[#3B82F6]">
                           {note.patientId}
                         </span>
                       )}
                       {note.isLocked && (
-                        <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-500">
-                          LOCKED
+                        <span className="text-[9px] font-bold px-2 py-1 rounded-md bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-500 flex items-center gap-1.5">
+                          <Lock className="w-2.5 h-2.5" />
+                          Locked
                         </span>
                       )}
                     </div>
@@ -1096,6 +1619,7 @@ export default function Home() {
           </div>
         )}
       </main>
+      </div>
 
       {/* Floating Action Bar Pill (Bottom Center) */}
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40">
@@ -1381,17 +1905,32 @@ export default function Home() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.2, ease: "easeOut" }}
-            className="fixed inset-0 z-50 flex overflow-hidden bg-[#F1F5F9] dark:bg-[#070B14]"
+            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+            className="fixed inset-0 z-[60] flex overflow-hidden bg-white/60 dark:bg-[#070B14]/80 backdrop-blur-xl"
           >
-            {/* Ambient background */}
+            {/* Ambient background animations */}
             <div className="pointer-events-none absolute inset-0 overflow-hidden">
-              <div className="absolute -top-32 -right-32 h-96 w-96 rounded-full bg-blue-400/10 blur-3xl dark:bg-blue-600/8" />
-              <div className="absolute -bottom-32 -left-32 h-96 w-96 rounded-full bg-indigo-400/10 blur-3xl dark:bg-indigo-600/8" />
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 1, ease: "easeOut" }}
+                className="absolute -top-32 -right-32 h-96 w-96 rounded-full bg-blue-500/20 blur-3xl dark:bg-blue-600/10" 
+              />
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 1, ease: "easeOut", delay: 0.2 }}
+                className="absolute -bottom-32 -left-32 h-96 w-96 rounded-full bg-indigo-500/20 blur-3xl dark:bg-indigo-600/10" 
+              />
             </div>
 
             {/* Notes sidebar */}
-            <aside className="hidden md:flex relative w-56 lg:w-60 shrink-0 flex-col border-r border-slate-200/80 dark:border-white/6 bg-white/70 dark:bg-[#0B1120]/90 backdrop-blur-xl">
+            <motion.aside 
+              initial={{ x: -20, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ duration: 0.4, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
+              className="hidden md:flex relative w-56 lg:w-60 shrink-0 flex-col border-r border-slate-200/80 dark:border-white/6 bg-white/70 dark:bg-[#0B1120]/90 backdrop-blur-xl shadow-2xl"
+            >
               <div className="px-3 py-2.5 border-b border-slate-200/80 dark:border-white/6">
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">Notes</p>
               </div>
@@ -1419,9 +1958,14 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-            </aside>
+            </motion.aside>
 
-            <div className="relative flex-1 flex flex-col min-w-0 overflow-hidden px-3 py-2 sm:px-4 sm:py-3">
+            <motion.div 
+              initial={{ y: 20, opacity: 0, scale: 0.97 }}
+              animate={{ y: 0, opacity: 1, scale: 1 }}
+              transition={{ duration: 0.4, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
+              className="relative flex-1 flex flex-col min-w-0 overflow-hidden px-3 py-2 sm:px-4 sm:py-3"
+            >
               {/* Mobile note switcher */}
               <div className="md:hidden shrink-0 mb-2 -mx-1 overflow-x-auto">
                 <div className="flex gap-1.5 px-1">
@@ -1487,6 +2031,27 @@ export default function Home() {
                       className="h-8 w-8 rounded-lg flex items-center justify-center text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 cursor-pointer">
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
+                    {syncInfo?.portal === "business" && (
+                      <button onClick={() => setShowChatPanel(!showChatPanel)} title="Project Chat"
+                        className={`h-8 px-2.5 rounded-lg border flex items-center justify-center cursor-pointer transition-all gap-1.5 text-[11px] font-semibold ${
+                          showChatPanel 
+                            ? "border-blue-300/50 bg-blue-500/10 text-blue-600 dark:text-blue-400" 
+                            : "border-slate-200/60 dark:border-white/8 text-slate-500 hover:bg-white/80 dark:hover:bg-neutral-900/80"
+                        }`}>
+                        <div className="relative">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                          {(() => {
+                            const total = activeNote.comments?.length || 0;
+                            const unread = Math.max(0, total - (chatReadCounts[activeNote.id] || 0));
+                            if (unread > 0) {
+                              return <span className="absolute -top-1 -right-1.5 bg-rose-500 text-white text-[8px] font-bold px-1 rounded-full">{unread > 99 ? '99+' : unread}</span>;
+                            }
+                            return null;
+                          })()}
+                        </div>
+                        <span className="hidden sm:inline">Chat</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -1512,27 +2077,170 @@ export default function Home() {
                         className="font-mono text-slate-600 dark:text-blue-400 bg-transparent outline-none border-none focus:ring-0 p-0 w-16"
                       />
                     </span>
+                    <span className="text-slate-300 dark:text-slate-700">|</span>
+                    <span className="flex items-center gap-1">
+                      Cat:
+                      <CategorySelect
+                        categories={categories}
+                        value={activeNote.categoryId || "general"}
+                        onChange={(id) => handleCategoryIdChange(id)}
+                      />
+                    </span>
+                    {syncInfo?.portal === "business" && usersList.length > 0 && (
+                      <>
+                        <span className="text-slate-300 dark:text-slate-700">|</span>
+                        <span className="flex items-center gap-1">
+                          <UserAssignSelect
+                            users={usersList}
+                            selectedUsernames={activeNote.assignedTo || []}
+                            onChange={handleAssignedToChange}
+                          />
+                        </span>
+                      </>
+                    )}
                     {activeNote.tags?.map((t, idx) => (
                       <span key={idx} className="px-1.5 py-px rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold">{t}</span>
                     ))}
                   </div>
                 </div>
 
-                {/* Editor — takes maximum space */}
-                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                  <Editor
-                    key={activeNoteId}
-                    content={activeNote.content}
-                    onChange={handleContentChange}
-                  />
+                {/* Editor and Chat side-by-side */}
+                <div className="flex-1 flex min-h-0 overflow-hidden gap-4">
+                  
+                  {/* Main Editor */}
+                  <div className="flex-1 flex flex-col min-h-0 overflow-hidden transition-all duration-300">
+                    <Editor
+                      key={activeNoteId}
+                      content={activeNote.content}
+                      onChange={handleContentChange}
+                    />
+                  </div>
+
+                  {/* Sliding Chat Panel */}
+                  <AnimatePresence>
+                    {showChatPanel && syncInfo?.portal === "business" && (
+                      <motion.div
+                        initial={{ width: 0, opacity: 0, x: 20 }}
+                        animate={{ width: 320, opacity: 1, x: 0 }}
+                        exit={{ width: 0, opacity: 0, x: 20 }}
+                        transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+                        className="flex-shrink-0 flex flex-col bg-slate-50 dark:bg-neutral-900/50 rounded-2xl border border-slate-200/60 dark:border-white/10 overflow-hidden"
+                      >
+                        <div className="p-3 border-b border-slate-200/60 dark:border-white/10 flex items-center justify-between bg-white dark:bg-neutral-900">
+                          <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                            Project Chat
+                          </span>
+                          <button onClick={() => setShowChatPanel(false)} className="p-1 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        
+                        <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-3 custom-scrollbar">
+                          {(!activeNote.comments || activeNote.comments.length === 0) ? (
+                            <div className="flex-1 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 text-center px-4">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-2 opacity-50"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                              <span className="text-xs font-medium">No messages yet.</span>
+                              <span className="text-[10px]">Start the conversation!</span>
+                            </div>
+                          ) : (
+                            activeNote.comments.map(c => {
+                              const isMe = c.username === syncInfo?.username;
+                              const isImage = c.type === 'image';
+                              const isAudio = c.type === 'audio';
+                              
+                              return (
+                                <div key={c.id} className={`flex flex-col max-w-[85%] ${isMe ? 'self-end items-end' : 'self-start items-start'}`}>
+                                  <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 mb-0.5 px-1">{isMe ? 'You' : c.username}</span>
+                                  <div className={`px-3 py-2 rounded-2xl text-xs overflow-hidden ${
+                                    isMe 
+                                      ? 'bg-blue-600 text-white rounded-tr-sm' 
+                                      : 'bg-white dark:bg-[#1E293B] border border-slate-200/60 dark:border-white/5 text-slate-800 dark:text-slate-200 rounded-tl-sm'
+                                  }`}>
+                                    {isImage ? (
+                                      <img src={c.mediaData} alt="Shared image" className="max-w-full rounded-lg object-contain mt-1 max-h-48" />
+                                    ) : isAudio ? (
+                                      <audio src={c.mediaData} controls className="h-8 max-w-[200px] mt-1 outline-none" />
+                                    ) : (
+                                      <span className="break-words">{c.text}</span>
+                                    )}
+                                  </div>
+                                  <span className="text-[8px] text-slate-400 mt-0.5 px-1">{new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+
+                        <div className="p-3 bg-white dark:bg-neutral-900 border-t border-slate-200/60 dark:border-white/10 relative">
+                          <input type="file" accept="image/*" className="hidden" ref={fileInputRef} onChange={handleImageUpload} />
+                          {isRecording ? (
+                            <div className="flex items-center gap-2 justify-between bg-red-50 dark:bg-red-500/10 rounded-xl px-4 py-2 border border-red-200 dark:border-red-500/30">
+                              <div className="flex items-center gap-2">
+                                <motion.div animate={{ opacity: [1, 0.3, 1] }} transition={{ repeat: Infinity, duration: 1 }} className="w-2.5 h-2.5 rounded-full bg-red-500" />
+                                <span className="text-xs font-bold text-red-600 dark:text-red-400">Recording... 0:{recordingTime.toString().padStart(2, '0')}</span>
+                              </div>
+                              <button onClick={stopRecording} className="p-1 rounded-full bg-red-100 dark:bg-red-500/20 text-red-600 hover:bg-red-200 dark:hover:bg-red-500/30 transition-colors">
+                                <Square className="w-4 h-4 fill-current" />
+                              </button>
+                            </div>
+                          ) : (
+                            <form onSubmit={(e) => { e.preventDefault(); handleSendComment(); }} className="flex gap-2">
+                              <button 
+                                type="button"
+                                onClick={() => fileInputRef.current?.click()}
+                                disabled={isSendingComment}
+                                className="shrink-0 p-2 rounded-xl text-slate-400 hover:text-blue-500 hover:bg-slate-100 dark:hover:bg-[#0F172A] transition-colors"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                              </button>
+                              
+                              <input 
+                                type="text" 
+                                value={chatInput}
+                                onChange={(e) => setChatInput(e.target.value)}
+                                placeholder="Type a message..."
+                                disabled={isSendingComment}
+                                className="flex-1 bg-slate-100 dark:bg-[#0F172A] border border-transparent focus:border-blue-500/50 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none transition-colors"
+                              />
+                              
+                              {chatInput.trim() ? (
+                                <button 
+                                  type="submit"
+                                  disabled={isSendingComment}
+                                  className="shrink-0 w-8 h-8 rounded-xl bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition-colors disabled:opacity-50"
+                                >
+                                  {isSendingComment ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                                  )}
+                                </button>
+                              ) : (
+                                <button 
+                                  type="button"
+                                  onClick={startRecording}
+                                  disabled={isSendingComment}
+                                  className="shrink-0 p-2 rounded-xl text-slate-400 hover:text-red-500 hover:bg-slate-100 dark:hover:bg-[#0F172A] transition-colors"
+                                >
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line></svg>
+                                </button>
+                              )}
+                            </form>
+                          )}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
               </div>
-            </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
 
+      {isUserModalOpen && <UserManagementModal onClose={() => setIsUserModalOpen(false)} />}
     </div>
   );
 }

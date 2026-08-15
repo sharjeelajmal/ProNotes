@@ -18,6 +18,8 @@ function uriFingerprint(uri: string) {
   }
 }
 
+import { getAuthPayload } from "@/lib/authUtil";
+
 export async function GET() {
   try {
     const uri = process.env.MONGODB_URI || "";
@@ -28,8 +30,11 @@ export async function GET() {
       );
     }
 
+    const auth = await getAuthPayload();
+    const portal = auth.portal;
+
     await connectDB();
-    const noteCount = await Note.countDocuments();
+    const noteCount = await Note.countDocuments({ portal });
     const fingerprint = uriFingerprint(uri);
 
     return jsonResponse({
@@ -38,6 +43,9 @@ export async function GET() {
       host: fingerprint.host,
       noteCount,
       collection: "notes",
+      portal,
+      isAdmin: auth.isAdmin,
+      username: auth.username,
       source: process.env.VERCEL ? "vercel" : "local",
     });
   } catch (error) {

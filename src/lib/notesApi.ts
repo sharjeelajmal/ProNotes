@@ -3,8 +3,10 @@ export type NotePayload = {
   content: string;
   tags?: string[];
   patientId?: string;
+  categoryId?: string;
   pin?: string;
   isPinned?: boolean;
+  assignedTo?: string[];
 };
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
@@ -59,9 +61,14 @@ export async function fetchNotesApi() {
       updatedAt: string;
       tags: string[];
       patientId?: string;
+      categoryId?: string;
       isLocked?: boolean;
       pin?: string;
       isPinned?: boolean;
+      assignedTo?: string[];
+      createdBy?: string;
+      isTrashed?: boolean;
+      comments?: any[];
     }>;
     error?: string;
   }>("/api/notes");
@@ -77,8 +84,13 @@ export async function saveNoteApi(id: string, data: NotePayload) {
       updatedAt: string;
       tags: string[];
       patientId?: string;
+      categoryId?: string;
       isLocked?: boolean;
       isPinned?: boolean;
+      assignedTo?: string[];
+      createdBy?: string;
+      isTrashed?: boolean;
+      comments?: any[];
     };
     error?: string;
   }>(`/api/notes/${encodeURIComponent(id)}`, {
@@ -92,6 +104,34 @@ export async function deleteNoteApi(id: string) {
     `/api/notes/${encodeURIComponent(id)}`,
     { method: "DELETE" }
   );
+}
+
+export async function restoreNoteApi(id: string) {
+  return apiFetch<{ success: boolean; error?: string }>(
+    `/api/notes/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ isTrashed: false }),
+    }
+  );
+}
+
+export async function addCommentApi(id: string, text: string, type: string = 'text', mediaData?: string) {
+  return apiFetch<{
+    success: boolean;
+    comment?: {
+      id: string;
+      username: string;
+      text: string;
+      type?: string;
+      mediaData?: string;
+      createdAt: string;
+    };
+    error?: string;
+  }>(`/api/notes/${encodeURIComponent(id)}/comment`, {
+    method: "POST",
+    body: JSON.stringify({ text, type, mediaData }),
+  });
 }
 
 export async function togglePinApi(id: string, isPinned: boolean) {
@@ -114,13 +154,34 @@ export async function unlockNoteApi(id: string, pin: string) {
       updatedAt: string;
       tags: string[];
       patientId?: string;
+      categoryId?: string;
       isLocked?: boolean;
       pin?: string;
       isPinned?: boolean;
+      assignedTo?: string[];
     };
     error?: string;
   }>(`/api/notes/${encodeURIComponent(id)}/unlock`, {
     method: "POST",
     body: JSON.stringify({ pin }),
+  });
+}
+
+export async function fetchCategoriesApi() {
+  return apiFetch<{
+    success: boolean;
+    categories: Array<{ id: string; name: string }>;
+    error?: string;
+  }>("/api/categories");
+}
+
+export async function createCategoryApi(name: string) {
+  return apiFetch<{
+    success: boolean;
+    category?: { id: string; name: string };
+    error?: string;
+  }>("/api/categories", {
+    method: "POST",
+    body: JSON.stringify({ name }),
   });
 }

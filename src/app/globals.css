@@ -12,6 +12,11 @@
   /* Override backgrounds and sidebar custom transparency */
   --color-navy-950: #0B1120;
   --color-slate-50: #F8FAFC;
+
+  @keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
 }
 
 /* Global smooth transition for background-color, border-color, and text-color */

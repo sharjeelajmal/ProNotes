@@ -1,11 +1,17 @@
 import type { Metadata } from "next";
+import { getAuthPayload } from "@/lib/authUtil";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
-export const metadata: Metadata = {
-  title: "ProNotes - Personal Notepad",
-  description: "A clean, responsive personal notepad for saving important notes.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const auth = await getAuthPayload();
+  const isBusiness = auth.portal === "business";
+  
+  return {
+    title: isBusiness ? "ProManager - PM Tool" : "ProNotes - Personal Notepad",
+    description: isBusiness ? "A secure project management tool for your business." : "A clean, responsive personal notepad for saving important notes.",
+  };
+}
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

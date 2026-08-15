@@ -7,8 +7,10 @@ export const SaveNoteInputSchema = z.object({
   content: z.string(),
   tags: z.array(z.string()).optional(),
   patientId: z.string().max(50).optional(),
+  categoryId: z.string().optional(),
   pin: z.string().regex(/^\d{4}$|^$/).optional(),
   isPinned: z.boolean().optional(),
+  assignedTo: z.array(z.string()).optional(),
 });
 
 export const FetchLockedNoteInputSchema = z.object({
@@ -24,8 +26,13 @@ export function formatNote(note: {
   content: string;
   tags: string[];
   patientId?: string;
+  categoryId?: string;
   pin?: string;
   isPinned?: boolean;
+  assignedTo?: string[];
+  createdBy?: string;
+  isTrashed?: boolean;
+  comments?: any[];
   updatedAt: Date;
 }) {
   const isLocked = !!note.pin;
@@ -35,23 +42,46 @@ export function formatNote(note: {
     content: isLocked ? "" : note.content,
     tags: note.tags,
     patientId: isLocked ? "" : note.patientId || "",
+    categoryId: note.categoryId || "",
     isLocked,
     pin: note.pin || "",
     isPinned: !!note.isPinned,
+    assignedTo: note.assignedTo || [],
+    createdBy: note.createdBy,
+    isTrashed: !!note.isTrashed,
+    comments: (note.comments || []).map((c: any) => ({
+      id: c.id,
+      username: c.username,
+      text: c.text,
+      type: c.type,
+      mediaData: c.mediaData,
+      createdAt: c.createdAt instanceof Date ? c.createdAt.toISOString() : c.createdAt
+    })),
     updatedAt: note.updatedAt.toISOString(),
   };
 }
 
-export async function fetchAllNotes() {
+export async function fetchAllNotes(portal: string, username?: string, isAdmin?: boolean) {
   try {
     await connectDB();
-    const dbNotes = await Note.find({}).sort({ isPinned: -1, updatedAt: -1 });
+    let query: any = { portal };
+    
+    // Apply role-based filtering for business portal
+    if (portal === 'business' && !isAdmin && username) {
+      query.$or = [
+        { assignedTo: username },
+        { createdBy: username }
+      ];
+    }
+    
+    // Fetch all notes (including trashed, we will filter them in the client)
+    const dbNotes = await Note.find(query).sort({ isPinned: -1, updatedAt: -1 });
     return {
       success: true as const,
       notes: dbNotes.map((note) => formatNote(note)),
     };
   } catch (error) {
-    console.error("fetchAllNotes failed:", error);
+    console.error("fetchNotes failed:", error);
     return {
       success: false as const,
       error: error instanceof Error ? error.message : "Failed to load notes",
@@ -67,9 +97,13 @@ export async function saveNote(
     content: string;
     tags?: string[];
     patientId?: string;
+    categoryId?: string;
     pin?: string;
     isPinned?: boolean;
-  }
+    assignedTo?: string[];
+  },
+  portal: string,
+  username?: string
 ) {
   try {
     await connectDB();
@@ -86,7 +120,10 @@ export async function saveNote(
       content: data.content,
       tags: data.tags || [],
       patientId: data.patientId || "",
+      categoryId: data.categoryId || "",
       pin: data.pin || "",
+      assignedTo: data.assignedTo || [],
+      portal,
     };
     if (data.isPinned !== undefined) {
       updateData.isPinned = data.isPinned;
@@ -94,11 +131,16 @@ export async function saveNote(
 
     let updatedNote;
     if (isObjectId) {
-      updatedNote = await Note.findByIdAndUpdate(id, updateData, { new: true, upsert: true });
+      updatedNote = await Note.findOneAndUpdate(
+        { _id: id, portal },
+        updateData,
+        { new: true, upsert: true }
+      );
     } else {
       updatedNote = await Note.create({
         ...updateData,
         isPinned: data.isPinned ?? false,
+        createdBy: username || "System",
       });
     }
 
@@ -115,8 +157,20 @@ export async function saveNote(
         content: isLocked ? "" : updatedNote.content,
         tags: updatedNote.tags,
         patientId: isLocked ? "" : updatedNote.patientId,
+        categoryId: updatedNote.categoryId || "",
         isLocked,
         isPinned: !!updatedNote.isPinned,
+        assignedTo: updatedNote.assignedTo || [],
+        createdBy: updatedNote.createdBy,
+        isTrashed: !!updatedNote.isTrashed,
+        comments: (updatedNote.comments || []).map((c: any) => ({
+          id: c.id,
+          username: c.username,
+          text: c.text,
+          type: c.type,
+          mediaData: c.mediaData,
+          createdAt: c.createdAt instanceof Date ? c.createdAt.toISOString() : c.createdAt
+        })),
         updatedAt: updatedNote.updatedAt.toISOString(),
       },
     };
@@ -129,7 +183,7 @@ export async function saveNote(
   }
 }
 
-export async function unlockNote(rawId: string, rawPin: string) {
+export async function unlockNote(rawId: string, rawPin: string, portal: string) {
   try {
     await connectDB();
 
@@ -139,7 +193,7 @@ export async function unlockNote(rawId: string, rawPin: string) {
     }
     const { id, pin } = validated.data;
 
-    const note = await Note.findById(id);
+    const note = await Note.findOne({ _id: id, portal });
     if (!note) {
       return { success: false as const, error: "Note not found" };
     }
@@ -157,9 +211,11 @@ export async function unlockNote(rawId: string, rawPin: string) {
         content: note.content,
         tags: note.tags,
         patientId: note.patientId,
+        categoryId: note.categoryId || "",
         isLocked: true,
         pin: note.pin,
         isPinned: !!note.isPinned,
+        assignedTo: note.assignedTo || [],
         updatedAt: note.updatedAt.toISOString(),
       },
     };
@@ -172,7 +228,7 @@ export async function unlockNote(rawId: string, rawPin: string) {
   }
 }
 
-export async function deleteNote(rawId: string) {
+export async function deleteNote(rawId: string, portal: string) {
   try {
     await connectDB();
 
@@ -183,7 +239,14 @@ export async function deleteNote(rawId: string) {
     const id = validated.data;
 
     if (/^[0-9a-fA-F]{24}$/.test(id)) {
-      await Note.findByIdAndDelete(id);
+      const existingNote = await Note.findOne({ _id: id, portal });
+      if (existingNote) {
+        if (existingNote.isTrashed) {
+          await Note.findOneAndDelete({ _id: id, portal });
+        } else {
+          await Note.findOneAndUpdate({ _id: id, portal }, { isTrashed: true }, { new: true });
+        }
+      }
     }
 
     return { success: true as const };
@@ -196,7 +259,7 @@ export async function deleteNote(rawId: string) {
   }
 }
 
-export async function toggleNotePin(rawId: string, isPinned: boolean) {
+export async function toggleNotePin(rawId: string, isPinned: boolean, portal: string) {
   try {
     await connectDB();
 
@@ -210,7 +273,7 @@ export async function toggleNotePin(rawId: string, isPinned: boolean) {
       return { success: false as const, error: "Save the note before pinning it" };
     }
 
-    const updated = await Note.findByIdAndUpdate(id, { isPinned }, { new: true });
+    const updated = await Note.findOneAndUpdate({ _id: id, portal }, { isPinned }, { new: true });
     if (!updated) {
       return { success: false as const, error: "Note not found" };
     }
