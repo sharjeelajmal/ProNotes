@@ -1,8 +1,10 @@
 {
-  "name": "ProNotes - Personal Notepad",
+  "name": "PM Tool",
   "short_name": "ProNotes",
   "description": "Personal notepad for saving important notes",
   "start_url": "/",
+  "id": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#F8FAFC",
   "theme_color": "#0B1120",

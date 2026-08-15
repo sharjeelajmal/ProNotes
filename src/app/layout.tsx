@@ -10,6 +10,12 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: isBusiness ? "ProManager - PM Tool" : "ProNotes - Personal Notepad",
     description: isBusiness ? "A secure project management tool for your business." : "A clean, responsive personal notepad for saving important notes.",
+    manifest: "/manifest.json",
+    appleWebApp: {
+      capable: true,
+      statusBarStyle: "black-translucent",
+      title: isBusiness ? "ProManager" : "ProNotes",
+    },
   };
 }
 
@@ -28,6 +34,29 @@ export default function RootLayout({
         <link rel="manifest" href="/manifest.json" />
         <link rel="apple-touch-icon" href="/icon-192.png" />
         <link rel="icon" href="/icon-192.png" type="image/png" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <meta name="apple-mobile-web-app-title" content="ProNotes" />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              window.__deferredPwaPrompt = null;
+              window.addEventListener('beforeinstallprompt', function(e) {
+                e.preventDefault();
+                window.__deferredPwaPrompt = e;
+                window.dispatchEvent(new CustomEvent('pwa-prompt-ready'));
+              });
+              if ('serviceWorker' in navigator) {
+                window.addEventListener('load', function() {
+                  navigator.serviceWorker.register('/sw.js').catch(function(err) {
+                    console.warn('SW registration failed:', err);
+                  });
+                });
+              }
+            `,
+          }}
+        />
       </head>
       <body className="font-sans min-h-full flex flex-col bg-white dark:bg-black text-slate-900 dark:text-slate-100">
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
@@ -37,3 +66,4 @@ export default function RootLayout({
     </html>
   );
 }
+

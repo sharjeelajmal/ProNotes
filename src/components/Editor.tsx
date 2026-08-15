@@ -58,8 +58,10 @@ import {
   Loader2,
   Mic,
   Square,
+  X,
 } from "lucide-react";
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { Node, mergeAttributes } from "@tiptap/core";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -130,7 +132,7 @@ function ToolbarBtn({
 }: {
   active?: boolean;
   disabled?: boolean;
-  onClick: () => void;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   title: string;
   children: React.ReactNode;
   className?: string;
@@ -158,18 +160,108 @@ function ToolbarSep() {
 }
 
 export function Editor({ content, onChange }: EditorProps) {
+  const [mounted, setMounted] = React.useState(false);
   const [tablePickerOpen, setTablePickerOpen] = React.useState(false);
   const [colorPickerOpen, setColorPickerOpen] = React.useState(false);
   const [highlightPickerOpen, setHighlightPickerOpen] = React.useState(false);
+  const [linkPickerOpen, setLinkPickerOpen] = React.useState(false);
+  const [linkUrl, setLinkUrl] = React.useState("");
+
+  const [colorPickerPos, setColorPickerPos] = React.useState<{ top: number; left: number } | null>(null);
+  const [highlightPickerPos, setHighlightPickerPos] = React.useState<{ top: number; left: number } | null>(null);
+  const [tablePickerPos, setTablePickerPos] = React.useState<{ top: number; left: number } | null>(null);
+  const [linkPickerPos, setLinkPickerPos] = React.useState<{ top: number; left: number } | null>(null);
+
   const [tableRows, setTableRows] = React.useState(3);
   const [tableCols, setTableCols] = React.useState(3);
   const [isInTable, setIsInTable] = React.useState(false);
-  const tablePickerRef = React.useRef<HTMLDivElement>(null);
-  const colorPickerRef = React.useRef<HTMLDivElement>(null);
-  const highlightPickerRef = React.useRef<HTMLDivElement>(null);
+
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = React.useState(false);
   const [uploadText, setUploadText] = React.useState("Uploading...");
+
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const closeAllPickers = () => {
+    setColorPickerOpen(false);
+    setHighlightPickerOpen(false);
+    setTablePickerOpen(false);
+    setLinkPickerOpen(false);
+  };
+
+  const getUpwardPosition = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    popupWidth: number,
+    popupHeight: number
+  ) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const padding = 16;
+    const gap = 10;
+    const screenW = typeof window !== "undefined" ? window.innerWidth : 400;
+    const screenH = typeof window !== "undefined" ? window.innerHeight : 800;
+
+    let left = rect.left + rect.width / 2 - popupWidth / 2;
+    if (left + popupWidth > screenW - padding) {
+      left = screenW - popupWidth - padding;
+    }
+    if (left < padding) left = padding;
+
+    // Prefer opening ABOVE the toolbar/button (so it animates upward)
+    let top = rect.top - popupHeight - gap;
+    // If not enough room above screen, place below
+    if (top < padding) {
+      top = rect.bottom + gap;
+    }
+
+    return { top, left };
+  };
+
+  const openColorPicker = (e: React.MouseEvent<HTMLButtonElement>) => {
+    setColorPickerPos(getUpwardPosition(e, 185, 115));
+    setColorPickerOpen((o) => !o);
+    setHighlightPickerOpen(false);
+    setTablePickerOpen(false);
+    setLinkPickerOpen(false);
+  };
+
+  const openHighlightPicker = (e: React.MouseEvent<HTMLButtonElement>) => {
+    setColorPickerPos(null);
+    setHighlightPickerPos(getUpwardPosition(e, 155, 105));
+    setHighlightPickerOpen((o) => !o);
+    setColorPickerOpen(false);
+    setTablePickerOpen(false);
+    setLinkPickerOpen(false);
+  };
+
+  const openTablePicker = (e: React.MouseEvent<HTMLButtonElement>) => {
+    setTablePickerPos(getUpwardPosition(e, 220, 225));
+    setTablePickerOpen((o) => !o);
+    setColorPickerOpen(false);
+    setHighlightPickerOpen(false);
+    setLinkPickerOpen(false);
+  };
+
+  const openLinkPicker = (e: React.MouseEvent<HTMLButtonElement>) => {
+    const prev = (editor?.getAttributes("link").href as string | undefined) || "";
+    setLinkUrl(prev || "https://");
+    setLinkPickerPos(getUpwardPosition(e, 260, 130));
+    setLinkPickerOpen((o) => !o);
+    setColorPickerOpen(false);
+    setHighlightPickerOpen(false);
+    setTablePickerOpen(false);
+  };
+
+  const applyLink = () => {
+    if (!editor) return;
+    if (!linkUrl || linkUrl.trim() === "" || linkUrl === "https://") {
+      editor.chain().focus().extendMarkRange("link").unsetLink().run();
+    } else {
+      editor.chain().focus().extendMarkRange("link").setLink({ href: linkUrl.trim() }).run();
+    }
+    setLinkPickerOpen(false);
+  };
 
   // Recording State
   const [isRecording, setIsRecording] = React.useState(false);
@@ -296,8 +388,9 @@ export function Editor({ content, onChange }: EditorProps) {
     editorProps: {
       attributes: {
         class:
-          "focus:outline-none w-full text-slate-800 dark:text-slate-200 text-[15px] leading-relaxed px-5 py-4 prose dark:prose-invert max-w-none ProseMirror editor-scroll-body",
+          "focus:outline-none w-full text-slate-800 dark:text-slate-200 text-[15px] leading-relaxed px-3 py-3 sm:px-6 sm:py-5 prose dark:prose-invert max-w-none ProseMirror editor-scroll-body min-h-[350px] sm:min-h-full",
       },
+
       handleDrop: (view, event, slice, moved) => {
         if (!moved && event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0]) {
           const file = event.dataTransfer.files[0];
@@ -333,17 +426,6 @@ export function Editor({ content, onChange }: EditorProps) {
       editor.off("selectionUpdate", syncTableState);
     };
   }, [editor]);
-
-  React.useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as globalThis.Node;
-      if (tablePickerRef.current && !tablePickerRef.current.contains(target)) setTablePickerOpen(false);
-      if (colorPickerRef.current && !colorPickerRef.current.contains(target)) setColorPickerOpen(false);
-      if (highlightPickerRef.current && !highlightPickerRef.current.contains(target)) setHighlightPickerOpen(false);
-    };
-    document.addEventListener("click", handleClickOutside);
-    return () => document.removeEventListener("click", handleClickOutside);
-  }, []);
 
   React.useEffect(() => {
     if (!editor) return;
@@ -435,14 +517,15 @@ export function Editor({ content, onChange }: EditorProps) {
         )}
       </AnimatePresence>
       {/* Toolbar */}
-      <div className="shrink-0 rounded-t-2xl border-b border-slate-200/60 dark:border-white/6 bg-slate-50/90 dark:bg-neutral-900/70 backdrop-blur-md relative z-30">
-        <div className="flex items-center flex-wrap gap-1 p-2">
+      <div className="shrink-0 rounded-t-2xl border-b border-slate-200/60 dark:border-white/6 bg-slate-50/90 dark:bg-neutral-900/70 backdrop-blur-md relative z-30 overflow-x-auto no-scrollbar">
+        <div className="flex items-center flex-nowrap md:flex-wrap gap-1 p-1.5 sm:p-2 min-w-max md:min-w-0">
           <ToolbarBtn onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
             <Undo2 className="w-3.5 h-3.5" />
           </ToolbarBtn>
           <ToolbarBtn onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()} title="Redo">
             <Redo2 className="w-3.5 h-3.5" />
           </ToolbarBtn>
+
 
           <ToolbarSep />
 
@@ -470,71 +553,13 @@ export function Editor({ content, onChange }: EditorProps) {
 
           <ToolbarSep />
 
-          <div className="relative shrink-0" ref={colorPickerRef}>
-            <ToolbarBtn active={colorPickerOpen} onClick={() => { setColorPickerOpen((o) => !o); setHighlightPickerOpen(false); setTablePickerOpen(false); }} title="Text color">
-              <Palette className="w-3.5 h-3.5" />
-            </ToolbarBtn>
-            <AnimatePresence>
-              {colorPickerOpen && (
-                <motion.div 
-                  initial={{ opacity: 0, y: -10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                  transition={{ duration: 0.2 }}
-                  className="absolute top-full left-0 mt-2 z-[60] p-2 rounded-2xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-white/10 shadow-2xl grid grid-cols-5 gap-2 min-w-[160px]"
-                >
-                  {TEXT_COLORS.map((c) => (
-                    <button
-                      key={c.label}
-                      type="button"
-                      title={c.label}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        if (c.value) editor.chain().focus().setColor(c.value).run();
-                        else editor.chain().focus().unsetColor().run();
-                        setColorPickerOpen(false);
-                      }}
-                      className="w-7 h-7 rounded-lg border border-slate-200 dark:border-white/10 cursor-pointer hover:scale-110 transition-transform shadow-sm"
-                      style={{ background: c.value || "linear-gradient(135deg,#fff 50%,#000 50%)" }}
-                    />
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+          <ToolbarBtn active={colorPickerOpen} onClick={openColorPicker} title="Text color">
+            <Palette className="w-3.5 h-3.5" />
+          </ToolbarBtn>
 
-          <div className="relative shrink-0" ref={highlightPickerRef}>
-            <ToolbarBtn active={editor.isActive("highlight") || highlightPickerOpen} onClick={() => { setHighlightPickerOpen((o) => !o); setColorPickerOpen(false); setTablePickerOpen(false); }} title="Highlight">
-              <Highlighter className="w-3.5 h-3.5" />
-            </ToolbarBtn>
-            <AnimatePresence>
-              {highlightPickerOpen && (
-                <motion.div 
-                  initial={{ opacity: 0, y: -10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                  transition={{ duration: 0.2 }}
-                  className="absolute top-full left-0 mt-2 z-[60] p-2 rounded-2xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-white/10 shadow-2xl grid grid-cols-4 gap-2 min-w-[140px]"
-                >
-                  {HIGHLIGHT_COLORS.map((c) => (
-                    <button
-                      key={c.label}
-                      type="button"
-                      title={c.label}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        if (c.value) editor.chain().focus().toggleHighlight({ color: c.value }).run();
-                        else editor.chain().focus().unsetHighlight().run();
-                        setHighlightPickerOpen(false);
-                      }}
-                      className="w-7 h-7 rounded-lg border border-slate-200 dark:border-white/10 cursor-pointer hover:scale-110 transition-transform shadow-sm"
-                      style={{ background: c.value || "transparent" }}
-                    />
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+          <ToolbarBtn active={editor.isActive("highlight") || highlightPickerOpen} onClick={openHighlightPicker} title="Highlight">
+            <Highlighter className="w-3.5 h-3.5" />
+          </ToolbarBtn>
 
           <ToolbarSep />
 
@@ -592,14 +617,10 @@ export function Editor({ content, onChange }: EditorProps) {
 
           <ToolbarSep />
 
-          <ToolbarBtn active={editor.isActive("link")} onClick={setLink} title="Add link">
+          <ToolbarBtn active={editor.isActive("link") || linkPickerOpen} onClick={openLinkPicker} title="Add web link">
             <LinkIcon className="w-3.5 h-3.5" />
           </ToolbarBtn>
-          {editor.isActive("link") && (
-            <ToolbarBtn onClick={() => editor.chain().focus().unsetLink().run()} title="Remove link">
-              <Unlink className="w-3.5 h-3.5" />
-            </ToolbarBtn>
-          )}
+
           <ToolbarBtn onClick={addImage} title="Insert image or media">
             <ImageIcon className="w-3.5 h-3.5" />
           </ToolbarBtn>
@@ -607,42 +628,9 @@ export function Editor({ content, onChange }: EditorProps) {
             <Mic className="w-3.5 h-3.5" />
           </ToolbarBtn>
 
-          <div className="relative shrink-0" ref={tablePickerRef}>
-            <ToolbarBtn active={tablePickerOpen} onClick={() => { setTablePickerOpen((o) => !o); setColorPickerOpen(false); setHighlightPickerOpen(false); }} title="Insert table">
-              <TableIcon className="w-3.5 h-3.5" />
-            </ToolbarBtn>
-            <AnimatePresence>
-              {tablePickerOpen && (
-                <motion.div 
-                  initial={{ opacity: 0, y: -10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                  transition={{ duration: 0.2 }}
-                  className="absolute top-full right-0 md:left-0 md:right-auto mt-2 z-[60] p-4 rounded-2xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-white/10 shadow-2xl flex flex-col gap-3 min-w-[200px]"
-                >
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Table size</p>
-                  {(["Rows", "Cols"] as const).map((label, i) => {
-                    const val = i === 0 ? tableRows : tableCols;
-                    const set = i === 0 ? setTableRows : setTableCols;
-                    const max = i === 0 ? 20 : 10;
-                    return (
-                      <div key={label} className="flex items-center justify-between gap-3 bg-slate-50 dark:bg-white/5 p-1.5 rounded-xl">
-                        <span className="text-xs font-semibold text-slate-500 pl-2">{label}</span>
-                        <div className="flex items-center gap-1">
-                          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => set((v) => Math.max(1, v - 1))} className="p-1.5 rounded-lg bg-white dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 cursor-pointer shadow-sm border border-slate-200 dark:border-transparent transition-colors"><Minus className="w-3.5 h-3.5" /></button>
-                          <span className="text-sm font-bold font-mono w-6 text-center">{val}</span>
-                          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => set((v) => Math.min(max, v + 1))} className="p-1.5 rounded-lg bg-white dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 cursor-pointer shadow-sm border border-slate-200 dark:border-transparent transition-colors"><Plus className="w-3.5 h-3.5" /></button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={insertTable} className="w-full mt-2 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white text-xs font-bold cursor-pointer transition-colors shadow-md shadow-blue-500/20">
-                    Insert {tableRows} × {tableCols}
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+          <ToolbarBtn active={tablePickerOpen} onClick={openTablePicker} title="Insert table">
+            <TableIcon className="w-3.5 h-3.5" />
+          </ToolbarBtn>
 
           {isInTable && (
             <>
@@ -705,6 +693,222 @@ export function Editor({ content, onChange }: EditorProps) {
       <div className="flex-1 min-h-0 w-full overflow-x-auto overflow-y-auto">
         <EditorContent editor={editor} />
       </div>
+
+      {/* Portaled Popovers for 100% Guaranteed Top-Level Viewport Stacking */}
+      {mounted && typeof document !== "undefined" && createPortal(
+        <AnimatePresence>
+          {tablePickerOpen && (
+            <div className="fixed inset-0 z-[99998] flex items-end sm:items-start justify-center sm:justify-start pointer-events-auto">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 bg-black/25 dark:bg-black/40 backdrop-blur-[1px]"
+                onClick={closeAllPickers}
+              />
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                transition={{ type: "spring", damping: 25, stiffness: 350 }}
+                style={typeof window !== "undefined" && window.innerWidth >= 640 && tablePickerPos ? { position: "fixed", top: tablePickerPos.top, left: tablePickerPos.left } : {}}
+                className="relative z-[99999] w-full max-w-xs sm:w-64 mb-6 sm:mb-0 mx-4 sm:mx-0 p-5 rounded-2xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-white/10 shadow-2xl flex flex-col gap-4"
+              >
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-white/5 pb-2">
+                  <span className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
+                    <TableIcon className="w-3.5 h-3.5 text-blue-600" />
+                    Insert Table
+                  </span>
+                  <button onClick={closeAllPickers} className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <div className="flex flex-col gap-3">
+                  {(["Rows", "Cols"] as const).map((label, i) => {
+                    const val = i === 0 ? tableRows : tableCols;
+                    const set = i === 0 ? setTableRows : setTableCols;
+                    const max = i === 0 ? 20 : 10;
+                    return (
+                      <div key={label} className="flex items-center justify-between gap-3 bg-slate-50 dark:bg-white/5 p-2 rounded-xl">
+                        <span className="text-xs font-semibold text-slate-600 dark:text-slate-300 pl-1">{label}</span>
+                        <div className="flex items-center gap-1.5">
+                          <button type="button" onClick={() => set((v) => Math.max(1, v - 1))} className="w-7 h-7 flex items-center justify-center rounded-lg bg-white dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 cursor-pointer shadow-sm border border-slate-200 dark:border-transparent transition-colors"><Minus className="w-3.5 h-3.5" /></button>
+                          <span className="text-sm font-bold font-mono w-7 text-center">{val}</span>
+                          <button type="button" onClick={() => set((v) => Math.min(max, v + 1))} className="w-7 h-7 flex items-center justify-center rounded-lg bg-white dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 cursor-pointer shadow-sm border border-slate-200 dark:border-transparent transition-colors"><Plus className="w-3.5 h-3.5" /></button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <button type="button" onClick={insertTable} className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold cursor-pointer transition-colors shadow-lg shadow-blue-500/25">
+                  Insert {tableRows} × {tableCols} Table
+                </button>
+              </motion.div>
+            </div>
+          )}
+
+          {colorPickerOpen && (
+            <div className="fixed inset-0 z-[99998] flex items-end sm:items-start justify-center sm:justify-start pointer-events-auto">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 bg-black/25 dark:bg-black/40 backdrop-blur-[1px]"
+                onClick={closeAllPickers}
+              />
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                transition={{ type: "spring", damping: 25, stiffness: 350 }}
+                style={typeof window !== "undefined" && window.innerWidth >= 640 && colorPickerPos ? { position: "fixed", top: colorPickerPos.top, left: colorPickerPos.left } : {}}
+                className="relative z-[99999] w-full max-w-xs sm:w-52 mb-6 sm:mb-0 mx-4 sm:mx-0 p-3.5 rounded-2xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-white/10 shadow-2xl flex flex-col gap-2.5"
+              >
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-white/5 pb-1.5">
+                  <span className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
+                    <Palette className="w-3.5 h-3.5 text-blue-600" />
+                    Text Color
+                  </span>
+                  <button onClick={closeAllPickers} className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="grid grid-cols-5 gap-2 pt-1">
+                  {TEXT_COLORS.map((c) => (
+                    <button
+                      key={c.label}
+                      type="button"
+                      title={c.label}
+                      onClick={() => {
+                        if (c.value) editor.chain().focus().setColor(c.value).run();
+                        else editor.chain().focus().unsetColor().run();
+                        closeAllPickers();
+                      }}
+                      className="w-8 h-8 rounded-xl border border-slate-200 dark:border-white/10 cursor-pointer hover:scale-110 active:scale-95 transition-transform shadow-sm"
+                      style={{ background: c.value || "linear-gradient(135deg,#fff 50%,#000 50%)" }}
+                    />
+                  ))}
+                </div>
+              </motion.div>
+            </div>
+          )}
+
+          {highlightPickerOpen && (
+            <div className="fixed inset-0 z-[99998] flex items-end sm:items-start justify-center sm:justify-start pointer-events-auto">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 bg-black/25 dark:bg-black/40 backdrop-blur-[1px]"
+                onClick={closeAllPickers}
+              />
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                transition={{ type: "spring", damping: 25, stiffness: 350 }}
+                style={typeof window !== "undefined" && window.innerWidth >= 640 && highlightPickerPos ? { position: "fixed", top: highlightPickerPos.top, left: highlightPickerPos.left } : {}}
+                className="relative z-[99999] w-full max-w-xs sm:w-48 mb-6 sm:mb-0 mx-4 sm:mx-0 p-3.5 rounded-2xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-white/10 shadow-2xl flex flex-col gap-2.5"
+              >
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-white/5 pb-1.5">
+                  <span className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
+                    <Highlighter className="w-3.5 h-3.5 text-amber-500" />
+                    Highlight
+                  </span>
+                  <button onClick={closeAllPickers} className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="grid grid-cols-4 gap-2 pt-1">
+                  {HIGHLIGHT_COLORS.map((c) => (
+                    <button
+                      key={c.label}
+                      type="button"
+                      title={c.label}
+                      onClick={() => {
+                        if (c.value) editor.chain().focus().toggleHighlight({ color: c.value }).run();
+                        else editor.chain().focus().unsetHighlight().run();
+                        closeAllPickers();
+                      }}
+                      className="w-8 h-8 rounded-xl border border-slate-200 dark:border-white/10 cursor-pointer hover:scale-110 active:scale-95 transition-transform shadow-sm"
+                      style={{ background: c.value || "transparent" }}
+                    />
+                  ))}
+                </div>
+              </motion.div>
+            </div>
+          )}
+
+          {linkPickerOpen && (
+            <div className="fixed inset-0 z-[99998] flex items-end sm:items-start justify-center sm:justify-start pointer-events-auto">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 bg-black/25 dark:bg-black/40 backdrop-blur-[1px]"
+                onClick={closeAllPickers}
+              />
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                transition={{ type: "spring", damping: 25, stiffness: 350 }}
+                style={typeof window !== "undefined" && window.innerWidth >= 640 && linkPickerPos ? { position: "fixed", top: linkPickerPos.top, left: linkPickerPos.left } : {}}
+                className="relative z-[99999] w-full max-w-xs sm:w-72 mb-6 sm:mb-0 mx-4 sm:mx-0 p-4 rounded-2xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-white/10 shadow-2xl flex flex-col gap-3"
+              >
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-white/5 pb-1.5">
+                  <span className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
+                    <LinkIcon className="w-3.5 h-3.5 text-blue-600" />
+                    Web Link
+                  </span>
+                  <button onClick={closeAllPickers} className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <input
+                  type="url"
+                  autoFocus
+                  placeholder="https://example.com"
+                  value={linkUrl}
+                  onChange={(e) => setLinkUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      applyLink();
+                    }
+                  }}
+                  className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                />
+                <div className="flex items-center gap-2">
+                  {editor.isActive("link") && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        editor.chain().focus().unsetLink().run();
+                        closeAllPickers();
+                      }}
+                      className="flex-1 py-2 rounded-xl text-xs font-semibold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors cursor-pointer"
+                    >
+                      Remove
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={applyLink}
+                    className="flex-1 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-colors cursor-pointer shadow-md shadow-blue-500/20"
+                  >
+                    Apply Link
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </div>
   );
 }
+

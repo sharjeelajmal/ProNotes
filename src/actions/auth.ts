@@ -2,29 +2,39 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { connectDB } from "@/lib/db";
+import { User } from "@/models/User";
 
 export async function login(formData: FormData) {
-  const username = formData.get("username") as string;
-  const password = formData.get("password") as string;
+  const rawUsername = formData.get("username") as string;
+  const rawPassword = formData.get("password") as string;
 
-  const validPersonalUsername = process.env.PERSONAL_USERNAME || "admin";
-  const validPersonalPassword = process.env.PERSONAL_PASSWORD || "admin";
+  const username = rawUsername ? rawUsername.trim() : "";
+  const password = rawPassword ? rawPassword.trim() : "";
+
+  const validPersonalUsername = (process.env.PERSONAL_USERNAME || "admin").trim();
+  const validPersonalPassword = (process.env.PERSONAL_PASSWORD || "admin").trim();
   
-  const validBusinessUsername = process.env.BUSINESS_USERNAME || "business";
-  const validBusinessPassword = process.env.BUSINESS_PASSWORD || "business";
+  const validBusinessUsername = (process.env.BUSINESS_USERNAME || "business").trim();
+  const validBusinessPassword = (process.env.BUSINESS_PASSWORD || "business").trim();
 
   let authPayload: { portal: string, username: string, isAdmin: boolean } | null = null;
-  if (username === validPersonalUsername && password === validPersonalPassword) {
-    authPayload = { portal: "personal", username, isAdmin: true };
-  } else if (username === validBusinessUsername && password === validBusinessPassword) {
-    authPayload = { portal: "business", username, isAdmin: true };
+  
+  if (username.toLowerCase() === validPersonalUsername.toLowerCase() && password === validPersonalPassword) {
+    authPayload = { portal: "personal", username: validPersonalUsername, isAdmin: true };
+  } else if (username.toLowerCase() === validBusinessUsername.toLowerCase() && password === validBusinessPassword) {
+    authPayload = { portal: "business", username: validBusinessUsername, isAdmin: true };
   } else {
     // Check database for dynamically created business users
     try {
-      const { connectDB } = await import("@/lib/db");
-      const { User } = await import("@/models/User");
       await connectDB();
-      const user = await User.findOne({ username, password, portal: "business" });
+      const escapedUsername = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const user = await User.findOne({
+        username: { $regex: new RegExp(`^${escapedUsername}$`, "i") },
+        password: password,
+        portal: "business",
+      });
+
       if (user) {
         authPayload = { portal: "business", username: user.username, isAdmin: false };
       }
@@ -54,3 +64,4 @@ export async function logout() {
   cookieStore.delete("auth_token");
   redirect("/login");
 }
+

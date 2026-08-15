@@ -42,14 +42,20 @@ export async function createUser(data: z.infer<typeof CreateUserSchema>) {
       return { success: false as const, error: "Invalid user data" };
     }
 
-    const existing = await User.findOne({ username: validated.data.username });
+    const cleanUsername = validated.data.username.trim();
+    const cleanPassword = validated.data.password.trim();
+
+    const escapedUsername = cleanUsername.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const existing = await User.findOne({
+      username: { $regex: new RegExp(`^${escapedUsername}$`, "i") },
+    });
     if (existing) {
       return { success: false as const, error: "Username already exists" };
     }
 
     const newUser = await User.create({
-      username: validated.data.username,
-      password: validated.data.password,
+      username: cleanUsername,
+      password: cleanPassword,
       portal: "business",
     });
 
@@ -78,15 +84,22 @@ export async function updateUser(id: string, data: z.infer<typeof UpdateUserSche
       return { success: false as const, error: "Invalid user data" };
     }
 
+    const cleanUsername = validated.data.username.trim();
+    const cleanPassword = validated.data.password.trim();
+
     // Check if new username is taken by another user
-    const existing = await User.findOne({ username: validated.data.username, _id: { $ne: id } });
+    const escapedUsername = cleanUsername.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const existing = await User.findOne({
+      username: { $regex: new RegExp(`^${escapedUsername}$`, "i") },
+      _id: { $ne: id },
+    });
     if (existing) {
       return { success: false as const, error: "Username already exists" };
     }
 
     const updated = await User.findOneAndUpdate(
       { _id: id, portal: "business" },
-      { username: validated.data.username, password: validated.data.password },
+      { username: cleanUsername, password: cleanPassword },
       { new: true }
     );
 

@@ -111,6 +111,9 @@ export default function LoginPage() {
                   type="text"
                   name="username"
                   required
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   className="block w-full pl-11 pr-4 py-3.5 bg-white/50 dark:bg-[#0B1120]/50 border border-slate-200/80 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500/60 transition-all duration-300 font-medium"
                   placeholder="Enter username"
                   autoComplete="username"
@@ -128,6 +131,9 @@ export default function LoginPage() {
                   type={showPassword ? "text" : "password"}
                   name="password"
                   required
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   className="block w-full pl-11 pr-12 py-3.5 bg-white/50 dark:bg-[#0B1120]/50 border border-slate-200/80 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500/60 transition-all duration-300 font-medium"
                   placeholder="••••••••"
                   autoComplete="current-password"

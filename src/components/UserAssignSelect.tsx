@@ -66,7 +66,7 @@ export function UserAssignSelect({ users, selectedUsernames, onChange }: UserAss
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 5, scale: 0.95 }}
             transition={{ duration: 0.15 }}
-            className="absolute left-0 top-full mt-1.5 w-48 bg-white dark:bg-[#1E293B] border border-slate-200/80 dark:border-white/10 rounded-xl shadow-xl shadow-slate-200/40 dark:shadow-black/40 z-[100] overflow-hidden flex flex-col"
+            className="absolute right-0 sm:left-0 sm:right-auto top-full mt-1.5 w-48 max-w-[calc(100vw-32px)] bg-white dark:bg-[#1E293B] border border-slate-200/80 dark:border-white/10 rounded-xl shadow-xl shadow-slate-200/40 dark:shadow-black/40 z-[100] overflow-hidden flex flex-col"
           >
             <div className="p-2 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-[#0F172A]/50">
               <div className="relative">

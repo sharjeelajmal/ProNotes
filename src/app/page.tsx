@@ -112,6 +112,8 @@ export default function Home() {
 
   // PWA State
   const [deferredPrompt, setDeferredPrompt] = React.useState<any>(null);
+  const [isStandalone, setIsStandalone] = React.useState<boolean>(false);
+  const [isInstalled, setIsInstalled] = React.useState<boolean>(false);
 
   // Notepad PIN Lock Screen State
   const [pinModalOpen, setPinModalOpen] = React.useState<boolean>(false);
@@ -259,50 +261,81 @@ export default function Home() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [closeEditorWithoutHistory]);
 
-  // Remove all old cached data on every app load
+  // Register Service Worker & handle PWA install prompt
   React.useEffect(() => {
-    try {
-      localStorage.removeItem("pronotes_cache");
-      localStorage.removeItem("pronotes_cache_at");
-    } catch {
-      // ignore
+    // Check if app is already running in standalone mode (installed app window)
+    const isStandaloneMode = 
+      window.matchMedia("(display-mode: standalone)").matches || 
+      (window.navigator as any).standalone === true;
+    setIsStandalone(isStandaloneMode);
+
+    // 1. Pick up prompt if already caught by early head script
+    if ((window as any).__deferredPwaPrompt) {
+      setDeferredPrompt((window as any).__deferredPwaPrompt);
     }
 
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.getRegistrations().then((regs) => {
-        regs.forEach((reg) => reg.unregister());
-      });
-    }
+    const handlePromptReady = () => {
+      if ((window as any).__deferredPwaPrompt) {
+        setDeferredPrompt((window as any).__deferredPwaPrompt);
+      }
+    };
 
-    if ("caches" in window) {
-      caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))));
-    }
-  }, []);
-
-  // PWA install prompt only (no service worker caching)
-  React.useEffect(() => {
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
+      (window as any).__deferredPwaPrompt = e;
       setDeferredPrompt(e);
     };
 
+    const handleAppInstalled = () => {
+      (window as any).__deferredPwaPrompt = null;
+      setDeferredPrompt(null);
+      setIsInstalled(true);
+    };
+
+    window.addEventListener("pwa-prompt-ready", handlePromptReady);
     window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-    return () => window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleAppInstalled);
+
+    return () => {
+      window.removeEventListener("pwa-prompt-ready", handlePromptReady);
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
   }, []);
 
   const handleInstallApp = async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      await deferredPrompt.userChoice;
+    const promptEvent = deferredPrompt || (typeof window !== "undefined" && (window as any).__deferredPwaPrompt);
+    
+    if (promptEvent) {
+      try {
+        promptEvent.prompt();
+        const choiceResult = await promptEvent.userChoice;
+        if (choiceResult && choiceResult.outcome === "accepted") {
+          (window as any).__deferredPwaPrompt = null;
+          setDeferredPrompt(null);
+          setIsInstalled(true);
+        }
+      } catch (err) {
+        console.error("PWA install prompt error:", err);
+      }
     } else {
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-      if (isIOS) {
-        alert("To install: tap Share in Safari, then 'Add to Home Screen'.");
+      const isStandaloneMode = 
+        window.matchMedia("(display-mode: standalone)").matches || 
+        (window.navigator as any).standalone === true;
+        
+      if (isStandaloneMode) {
+        alert("ProNotes is already installed on your device.");
       } else {
-        alert("To install: open browser menu and choose 'Install app' or 'Add to Home screen'.");
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        if (isIOS) {
+          alert("To install ProNotes on iOS:\n1. Tap the Share button in Safari\n2. Scroll down and tap 'Add to Home Screen'");
+        } else {
+          alert("To install ProNotes:\n1. Open your browser menu (⋮ or ⋯)\n2. Select 'Install app' or 'Add to Home screen'");
+        }
       }
     }
   };
+
 
   const fetchIdRef = React.useRef(0);
 
@@ -1635,16 +1668,18 @@ export default function Home() {
             New Note
           </button>
 
-          {/* Install App — always visible */}
-          <button
-            onClick={handleInstallApp}
-            className="flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-full text-xs font-bold text-blue-600 dark:text-[#3B82F6] bg-blue-50/80 dark:bg-[#3B82F6]/10 hover:bg-blue-100 dark:hover:bg-[#3B82F6]/20 border border-blue-200/50 dark:border-blue-500/20 transition-colors cursor-pointer"
-            style={{ minHeight: "40px" }}
-            title="Install App"
-          >
-            <Download className="w-4 h-4 stroke-[2.5]" />
-            <span className="hidden sm:inline">Install App</span>
-          </button>
+          {/* Install App — hidden when running inside installed standalone app */}
+          {!isStandalone && (
+            <button
+              onClick={handleInstallApp}
+              className="flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-full text-xs font-bold text-blue-600 dark:text-[#3B82F6] bg-blue-50/80 dark:bg-[#3B82F6]/10 hover:bg-blue-100 dark:hover:bg-[#3B82F6]/20 border border-blue-200/50 dark:border-blue-500/20 transition-colors cursor-pointer"
+              style={{ minHeight: "40px" }}
+              title={isInstalled ? "App Installed" : "Install App"}
+            >
+              <Download className="w-4 h-4 stroke-[2.5]" />
+              <span className="hidden sm:inline">{isInstalled ? "App Installed" : "Install App"}</span>
+            </button>
+          )}
 
           {/* Search Trigger and Sliding Search Field (Desktop only) */}
           <div className="hidden md:flex items-center">

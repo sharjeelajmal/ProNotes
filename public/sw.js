@@ -1,19 +1,27 @@
-// Disable all caching — clear old caches and unregister this worker
-self.addEventListener('install', event => {
-  event.waitUntil(self.skipWaiting());
+const CACHE_NAME = 'pronotes-pwa-v2';
+
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
 });
 
-self.addEventListener('activate', event => {
-  event.waitUntil(
-    caches.keys()
-      .then(keys => Promise.all(keys.map(key => caches.delete(key))))
-      .then(() => self.registration.unregister())
-      .then(() => self.clients.matchAll({ type: 'window' }))
-      .then(clients => {
-        clients.forEach(client => client.navigate(client.url));
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('fetch', (event) => {
+  // Handle navigation requests
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).catch(() => {
+        return new Response('Offline', {
+          status: 503,
+          headers: { 'Content-Type': 'text/plain' }
+        });
       })
-  );
-});
+    );
+    return;
+  }
 
-// Never intercept requests — always use network
-self.addEventListener('fetch', () => {});
+  // Handle all other requests directly via network
+  event.respondWith(fetch(event.request));
+});

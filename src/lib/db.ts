@@ -25,14 +25,16 @@ export async function connectDB() {
     throw new Error("MONGODB_URI is not configured on the server");
   }
 
-  if (cached!.conn) {
+  if (cached!.conn && mongoose.connection.readyState === 1) {
     return cached!.conn;
   }
 
-  if (!cached!.promise) {
+  if (!cached!.promise || mongoose.connection.readyState === 0) {
     cached!.promise = mongoose.connect(MONGODB_URI, {
-      bufferCommands: false,
-    });
+      bufferCommands: true,
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 10000,
+    }).then((m) => m);
   }
 
   try {
@@ -44,3 +46,4 @@ export async function connectDB() {
 
   return cached!.conn;
 }
+
