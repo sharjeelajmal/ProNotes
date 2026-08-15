@@ -37,16 +37,40 @@ export default function LoginPage() {
     e.preventDefault();
     setError(null);
     const formData = new FormData(e.currentTarget);
+    const username = (formData.get("username") as string) || "";
+    const password = (formData.get("password") as string) || "";
     
     startTransition(async () => {
-      const result = await login(formData);
-      if (result?.error) {
-        setError(result.error);
-      } else if (result?.success) {
-        window.location.href = "/";
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || !data.success) {
+          setError(data.error || "Invalid username or password");
+        } else {
+          window.location.href = "/";
+        }
+      } catch {
+        // Fallback to Server Action if direct API fetch fails
+        try {
+          const result = await login(formData);
+          if (result?.error) {
+            setError(result.error);
+          } else if (result?.success) {
+            window.location.href = "/";
+          }
+        } catch {
+          setError("Network connection error. Please try again.");
+        }
       }
     });
   };
+
 
 
   return (
