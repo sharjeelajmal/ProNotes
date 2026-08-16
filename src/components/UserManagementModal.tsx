@@ -38,7 +38,7 @@ export function UserManagementModal({ onClose }: { onClose: () => void }) {
     fetchUsers();
   }, []);
 
-  const fetchUsers = async () => {
+  async function fetchUsers() {
     try {
       const res = await fetch("/api/users");
       const data = await res.json();

@@ -7,6 +7,7 @@ export type NotePayload = {
   pin?: string;
   isPinned?: boolean;
   assignedTo?: string[];
+  status?: string;
 };
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {

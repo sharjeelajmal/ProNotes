@@ -11,6 +11,7 @@ export const SaveNoteInputSchema = z.object({
   pin: z.string().regex(/^\d{4}$|^$/).optional(),
   isPinned: z.boolean().optional(),
   assignedTo: z.array(z.string()).optional(),
+  status: z.enum(['Pending', 'In Review', 'Done']).optional(),
 });
 
 export const FetchLockedNoteInputSchema = z.object({
@@ -33,6 +34,7 @@ export function formatNote(note: {
   createdBy?: string;
   isTrashed?: boolean;
   comments?: any[];
+  status?: string;
   updatedAt: Date;
 }) {
   const isLocked = !!note.pin;
@@ -57,6 +59,7 @@ export function formatNote(note: {
       mediaData: c.mediaData,
       createdAt: c.createdAt instanceof Date ? c.createdAt.toISOString() : c.createdAt
     })),
+    status: note.status || 'Pending',
     updatedAt: note.updatedAt.toISOString(),
   };
 }
@@ -101,6 +104,7 @@ export async function saveNote(
     pin?: string;
     isPinned?: boolean;
     assignedTo?: string[];
+    status?: string;
   },
   portal: string,
   username?: string
@@ -125,6 +129,9 @@ export async function saveNote(
       assignedTo: data.assignedTo || [],
       portal,
     };
+    if (data.status) {
+      updateData.status = data.status;
+    }
     if (data.isPinned !== undefined) {
       updateData.isPinned = data.isPinned;
     }
@@ -171,6 +178,7 @@ export async function saveNote(
           mediaData: c.mediaData,
           createdAt: c.createdAt instanceof Date ? c.createdAt.toISOString() : c.createdAt
         })),
+        status: updatedNote.status || 'Pending',
         updatedAt: updatedNote.updatedAt.toISOString(),
       },
     };
@@ -216,6 +224,7 @@ export async function unlockNote(rawId: string, rawPin: string, portal: string) 
         pin: note.pin,
         isPinned: !!note.isPinned,
         assignedTo: note.assignedTo || [],
+        status: note.status || 'Pending',
         updatedAt: note.updatedAt.toISOString(),
       },
     };

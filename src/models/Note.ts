@@ -22,6 +22,7 @@ export interface INote extends Document {
   createdBy?: string;
   isTrashed?: boolean;
   comments?: IComment[];
+  status?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -49,6 +50,7 @@ const NoteSchema = new Schema<INote>(
     createdBy: { type: String },
     isTrashed: { type: Boolean, default: false },
     comments: { type: [CommentSchema], default: [] },
+    status: { type: String, enum: ['Pending', 'In Review', 'Done'], default: 'Pending' },
   },
   { timestamps: true }
 );
@@ -62,6 +64,7 @@ if (models.Note && (
   !models.Note.schema.paths.assignedTo || 
   !models.Note.schema.paths.createdBy || 
   !models.Note.schema.paths.isTrashed ||
+  !models.Note.schema.paths.status ||
   !(models.Note.schema.path('comments') as any)?.schema?.paths?.type
 )) {
   delete (models as any).Note;

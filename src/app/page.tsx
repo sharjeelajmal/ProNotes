@@ -5,6 +5,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Editor } from "@/components/Editor";
 import { CategorySelect } from "@/components/CategorySelect";
 import { UserAssignSelect } from "@/components/UserAssignSelect";
+import { StatusSelect } from "@/components/StatusSelect";
 import { UserManagementModal } from "@/components/UserManagementModal";
 import { 
   Plus, 
@@ -54,6 +55,7 @@ interface Note {
   assignedTo?: string[];
   createdBy?: string;
   isTrashed?: boolean;
+  status?: string;
   comments?: {
     id: string;
     username: string;
@@ -78,10 +80,10 @@ function formatNoteDate(value: string) {
 
 function getGreeting() {
   const hour = new Date().getHours();
-  if (hour < 12) return "Good morning";
-  if (hour < 17) return "Good afternoon";
-  if (hour < 21) return "Good evening";
-  return "Good night";
+  if (hour < 12) return "Good Morning";
+  if (hour < 17) return "Good Afternoon";
+  if (hour < 21) return "Good Evening";
+  return "Good Night";
 }
 
 export default function Home() {
@@ -91,6 +93,7 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = React.useState<string>("");
   const [showSearch, setShowSearch] = React.useState<boolean>(false);
   const [sidebarFilter, setSidebarFilter] = React.useState<string>("all");
+  const [statusFilter, setStatusFilter] = React.useState<string>("All");
   const [saveStatus, setSaveStatus] = React.useState<"idle" | "saving" | "saved">("idle");
   const [isDraftDirty, setIsDraftDirty] = React.useState<boolean>(false);
   const [isLoading, setIsLoading] = React.useState<boolean>(true);
@@ -514,6 +517,7 @@ export default function Home() {
           pin: activeNote.pin || "",
           isPinned: activeNote.isPinned ?? false,
           assignedTo: activeNote.assignedTo || [],
+          status: activeNote.status || "Pending",
         });
 
         if (response.success && response.note) {
@@ -684,6 +688,18 @@ export default function Home() {
     setIsDraftDirty(true);
   };
 
+  const handleStatusChange = (status: string) => {
+    if (!activeNote) return;
+    setNotes(prev =>
+      prev.map(note =>
+        note.id === activeNoteId
+          ? { ...note, status, updatedAt: "Just now" }
+          : note
+      )
+    );
+    setIsDraftDirty(true);
+  };
+
   // Save note immediately (manual save)
   const handleSave = async () => {
     if (!activeNote) return;
@@ -698,6 +714,7 @@ export default function Home() {
         pin: activeNote.pin || "",
         isPinned: activeNote.isPinned ?? false,
         assignedTo: activeNote.assignedTo || [],
+        status: activeNote.status || "Pending",
       });
 
       if (response.success && response.note) {
@@ -850,7 +867,8 @@ export default function Home() {
       patientId: "",
       categoryId: defaultCategoryId,
       isLocked: false,
-      pin: ""
+      pin: "",
+      status: "Pending"
     };
     setNotes(prev => [newNote, ...prev]);
     openEditor(tempId);
@@ -871,6 +889,7 @@ export default function Home() {
         patientId: activeNote?.patientId || "",
         pin: newPinValue,
         isPinned: activeNote?.isPinned ?? false,
+        status: activeNote?.status || "Pending",
       });
       if (response.success && response.note) {
         applySavedNoteToState(activeNoteId, response.note);
@@ -896,6 +915,7 @@ export default function Home() {
         patientId: activeNote?.patientId || "",
         pin: "",
         isPinned: activeNote?.isPinned ?? false,
+        status: activeNote?.status || "Pending",
       });
       if (response.success && response.note) {
         applySavedNoteToState(activeNoteId, response.note);
@@ -923,6 +943,7 @@ export default function Home() {
         patientId: note.patientId,
         pin: note.pin || "",
         isPinned: note.isPinned ?? false,
+        status: note.status || "Pending",
       });
       if (response.success && response.note) {
         setIsDraftDirty(false);
@@ -1064,6 +1085,7 @@ export default function Home() {
       isLocked: false,
       pin: "",
       isPinned: false,
+      status: note.status || "Pending",
     };
 
     setNotes((prev) => [duplicate, ...prev]);
@@ -1076,6 +1098,7 @@ export default function Home() {
         patientId: duplicate.patientId,
         pin: "",
         isPinned: false,
+        status: duplicate.status,
       });
       if (response.success && response.note) {
         applySavedNoteToState(tempId, response.note);
@@ -1161,6 +1184,10 @@ export default function Home() {
       }
     }
 
+    if (syncInfo?.portal === "business" && statusFilter !== "All") {
+      baseNotes = baseNotes.filter(n => (n.status || "Pending") === statusFilter);
+    }
+
     return baseNotes.sort((a, b) => {
       const pinA = a.isPinned ? 1 : 0;
       const pinB = b.isPinned ? 1 : 0;
@@ -1174,6 +1201,187 @@ export default function Home() {
     { id: "locked", label: "Locked", icon: Lock },
     { id: "trash", label: "Trash", icon: Trash2 },
   ];
+
+  const renderNoteCard = (note: Note) => (
+                  <motion.div
+                    key={note.id}
+                    onClick={() => handleNoteCardClick(note)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        handleNoteCardClick(note);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    layout
+                    initial={{ opacity: 0, scale: 0.9, y: 15 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.9, y: -15, transition: { duration: 0.15 } }}
+                    whileHover={{ 
+                      y: -4, 
+                      boxShadow: "0 15px 30px -10px rgba(59, 130, 246, 0.15)",
+                      borderColor: "rgba(59, 130, 246, 0.3)"
+                    }}
+                    transition={{ type: "spring", stiffness: 350, damping: 25 }}
+                    className={`w-full text-left p-5 sm:p-6 rounded-3xl bg-white dark:bg-[#0F172A] border flex flex-col gap-3 sm:gap-4 transition-all duration-300 cursor-pointer shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] dark:shadow-[0_10px_30px_-10px_rgba(0,0,0,0.6)] relative group focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
+                      selectedNoteIds.has(note.id)
+                        ? "border-blue-400 dark:border-blue-500/50 ring-2 ring-blue-400/30"
+                        : "border-slate-100 dark:border-white/5"
+                    }`}
+                  >
+                    {/* Decorative faint glow */}
+                    <div className="absolute inset-0 rounded-3xl bg-gradient-to-br from-blue-600/5 to-indigo-600/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
+
+                    {selectionMode && (
+                      <div className="absolute top-3 right-3 z-20" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => toggleNoteSelection(note.id)}
+                          className={`w-6 h-6 rounded-md border flex items-center justify-center transition-colors ${
+                            selectedNoteIds.has(note.id)
+                              ? "bg-blue-600 border-blue-600 text-white"
+                              : "border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/80"
+                          }`}
+                          aria-label={selectedNoteIds.has(note.id) ? "Deselect note" : "Select note"}
+                        >
+                          {selectedNoteIds.has(note.id) && <CheckSquare className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="flex flex-col gap-1.5 relative z-10 w-full">
+                      <div className="flex items-start justify-between w-full">
+                        <span className="font-bold text-sm text-slate-800 dark:text-white leading-snug line-clamp-1 flex items-center gap-2 min-w-0 pr-2">
+                          <button
+                            onClick={(e) => handleTogglePin(e, note)}
+                            className={`transition-colors ${
+                              note.isPinned 
+                                ? "text-blue-600 dark:text-[#3B82F6]" 
+                                : "text-slate-300 dark:text-slate-600 hover:text-slate-500"
+                            }`}
+                            title={note.isPinned ? "Unpin note from top" : "Pin note to top"}
+                          >
+                            <Pin className={`w-3.5 h-3.5 ${note.isPinned ? "fill-current" : ""}`} />
+                          </button>
+                          <span className="truncate">{note.title || "Untitled Note"}</span>
+                        </span>
+                        
+                        {!selectionMode && (
+                          <div className="relative flex items-center gap-0.5 shrink-0 opacity-40 hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                e.nativeEvent.stopImmediatePropagation();
+                                setOpenMenuId(openMenuId === note.id ? null : note.id);
+                              }}
+                              className="p-1 rounded-md text-slate-500 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
+                            >
+                              <MoreHorizontal className="w-4 h-4" />
+                            </button>
+                            <AnimatePresence>
+                              {openMenuId === note.id && (
+                                <motion.div
+                                  initial={{ opacity: 0, scale: 0.95, y: -5 }}
+                                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                                  exit={{ opacity: 0, scale: 0.95, y: -5 }}
+                                  transition={{ duration: 0.15 }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="absolute right-0 top-full mt-1.5 w-32 bg-white dark:bg-[#1E293B] border border-slate-200/80 dark:border-white/10 rounded-xl shadow-xl shadow-slate-200/40 dark:shadow-black/40 z-50 overflow-hidden flex flex-col py-1"
+                                >
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleTogglePin(e, note);
+                                      setOpenMenuId(null);
+                                    }}
+                                    className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 flex items-center gap-2 transition-colors w-full text-left"
+                                  >
+                                    <Pin className="w-3.5 h-3.5" />
+                                    {note.isPinned ? "Unpin Note" : "Pin Note"}
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDeleteDialog({
+                                        noteIds: [note.id],
+                                        title: note.isTrashed ? "Delete permanently?" : "Move to trash?",
+                                        subtitle: note.isTrashed 
+                                          ? "Are you sure you want to permanently delete this note? This action cannot be undone."
+                                          : "This note will be moved to the trash."
+                                      });
+                                      setOpenMenuId(null);
+                                    }}
+                                    className="px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 flex items-center gap-2 transition-colors w-full text-left"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    {note.isTrashed ? "Delete Permanently" : "Move to Trash"}
+                                  </button>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div className="flex items-center gap-3 mt-0.5">
+                        <span className="text-[10px] text-slate-400 dark:text-slate-450 whitespace-nowrap flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          {formatNoteDate(note.updatedAt)}
+                        </span>
+                        {note.createdBy && syncInfo?.portal === 'business' && (
+                          <span className="text-[10px] text-indigo-500/80 dark:text-indigo-400/80 whitespace-nowrap font-medium">
+                            By {note.createdBy}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {note.isLocked && !note.content ? (
+                      <div className="flex items-center gap-2 text-amber-500/80 dark:text-amber-500/70 text-xs font-semibold py-1">
+                        <span className="text-amber-500 font-bold">Notepad PIN Protected</span>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-3 leading-relaxed relative z-10 font-medium">
+                        {stripHtml(note.content) || "Empty note content..."}
+                      </p>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-2 mt-auto pt-2 relative z-10">
+                      {note.assignedTo && note.assignedTo.map((u, idx) => (
+                        <span key={`assign-${idx}`} className="text-[9px] font-bold px-2 py-1 rounded-md bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5" title="Assigned User">
+                          <Users className="w-2.5 h-2.5" />
+                          {u}
+                        </span>
+                      ))}
+                      {note.tags && note.tags.map((t, idx) => (
+                        <span key={idx} className="text-[9px] font-bold px-2 py-1 rounded-md bg-blue-50/50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                          <Tag className="w-2.5 h-2.5" />
+                          {t}
+                        </span>
+                      ))}
+                      {syncInfo?.portal === 'business' && note.status && (
+                        <span className={`text-[9px] font-bold px-2 py-1 rounded-md flex items-center gap-1.5 ${
+                          note.status === 'Done' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' :
+                          note.status === 'In Review' ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400' :
+                          'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                        }`}>
+                          {note.status}
+                        </span>
+                      )}
+                      {!note.isLocked && note.patientId && (
+                        <span className="text-[9px] font-mono font-bold px-2 py-1 rounded-md bg-blue-50 dark:bg-[#3B82F6]/10 text-blue-600 dark:text-[#3B82F6]">
+                          {note.patientId}
+                        </span>
+                      )}
+                      {note.isLocked && (
+                        <span className="text-[9px] font-bold px-2 py-1 rounded-md bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-500 flex items-center gap-1.5">
+                          <Lock className="w-2.5 h-2.5" />
+                          Locked
+                        </span>
+                      )}
+                    </div>
+                  </motion.div>
+  );
 
   return (
     <div className="h-screen bg-[#F8FAFC] dark:bg-[#0B1120] text-slate-900 dark:text-slate-100 flex overflow-hidden transition-colors duration-500 font-sans">
@@ -1332,6 +1540,19 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
+            {syncInfo?.portal === 'business' && (
+              <div className="hidden md:flex bg-slate-100 dark:bg-[#1E293B] p-1 rounded-xl items-center text-xs font-semibold shadow-inner border border-slate-200/50 dark:border-white/5">
+                {['All', 'Pending', 'In Review', 'Done'].map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setStatusFilter(s)}
+                    className={`px-3 py-1.5 rounded-lg transition-all ${statusFilter === s ? 'bg-white dark:bg-[#334155] shadow-sm text-slate-800 dark:text-white' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
             {/* Search Bar matching image */}
             <div className="relative hidden md:block w-64">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -1479,174 +1700,32 @@ export default function Home() {
                 >
                   No notes found matching your search.
                 </motion.div>
+              ) : syncInfo?.portal === 'business' ? (
+                ['Pending', 'In Review', 'Done'].map(statusGroup => {
+                  const groupNotes = sortedNotes.filter(n => (n.status || 'Pending') === statusGroup);
+                  if (groupNotes.length === 0) return null;
+                  return (
+                    <motion.div 
+                      layout 
+                      key={statusGroup} 
+                      className="col-span-full mb-2"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10, transition: { duration: 0.15 } }}
+                      transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                    >
+                      <div className="flex items-center gap-2 mb-3 mt-1 ml-1">
+                        <div className={`h-2 w-2 rounded-full ${statusGroup === 'Done' ? 'bg-emerald-500' : statusGroup === 'In Review' ? 'bg-amber-500' : 'bg-slate-400'}`}></div>
+                        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">{statusGroup} ({groupNotes.length})</h3>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6">
+                        {groupNotes.map(renderNoteCard)}
+                      </div>
+                    </motion.div>
+                  )
+                })
               ) : (
-                sortedNotes.map((note) => (
-                  <motion.div
-                    key={note.id}
-                    onClick={() => handleNoteCardClick(note)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleNoteCardClick(note);
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    whileHover={{ 
-                      y: -4, 
-                      boxShadow: "0 15px 30px -10px rgba(59, 130, 246, 0.15)",
-                      borderColor: "rgba(59, 130, 246, 0.3)"
-                    }}
-                    transition={{ type: "spring", stiffness: 350, damping: 25 }}
-                    className={`w-full text-left p-5 sm:p-6 rounded-3xl bg-white dark:bg-[#0F172A] border flex flex-col gap-3 sm:gap-4 transition-all duration-300 cursor-pointer shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] dark:shadow-[0_10px_30px_-10px_rgba(0,0,0,0.6)] relative group focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
-                      selectedNoteIds.has(note.id)
-                        ? "border-blue-400 dark:border-blue-500/50 ring-2 ring-blue-400/30"
-                        : "border-slate-100 dark:border-white/5"
-                    }`}
-                  >
-                    {/* Decorative faint glow */}
-                    <div className="absolute inset-0 rounded-3xl bg-gradient-to-br from-blue-600/5 to-indigo-600/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
-
-                    {selectionMode && (
-                      <div className="absolute top-3 right-3 z-20" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          onClick={() => toggleNoteSelection(note.id)}
-                          className={`w-6 h-6 rounded-md border flex items-center justify-center transition-colors ${
-                            selectedNoteIds.has(note.id)
-                              ? "bg-blue-600 border-blue-600 text-white"
-                              : "border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/80"
-                          }`}
-                          aria-label={selectedNoteIds.has(note.id) ? "Deselect note" : "Select note"}
-                        >
-                          {selectedNoteIds.has(note.id) && <CheckSquare className="w-3.5 h-3.5" />}
-                        </button>
-                      </div>
-                    )}
-
-                    <div className="flex flex-col gap-1.5 relative z-10 w-full">
-                      <div className="flex items-start justify-between w-full">
-                        <span className="font-bold text-sm text-slate-800 dark:text-white leading-snug line-clamp-1 flex items-center gap-2 min-w-0 pr-2">
-                          <button
-                            onClick={(e) => handleTogglePin(e, note)}
-                            className={`transition-colors ${
-                              note.isPinned 
-                                ? "text-blue-600 dark:text-[#3B82F6]" 
-                                : "text-slate-300 dark:text-slate-600 hover:text-slate-500"
-                            }`}
-                            title={note.isPinned ? "Unpin note from top" : "Pin note to top"}
-                          >
-                            <Pin className={`w-3.5 h-3.5 ${note.isPinned ? "fill-current" : ""}`} />
-                          </button>
-                          <span className="truncate">{note.title || "Untitled Note"}</span>
-                        </span>
-                        
-                        {!selectionMode && (
-                          <div className="relative flex items-center gap-0.5 shrink-0 opacity-40 hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={(e) => { 
-                                e.stopPropagation(); 
-                                e.nativeEvent.stopImmediatePropagation();
-                                setOpenMenuId(openMenuId === note.id ? null : note.id);
-                              }}
-                              className="p-1 rounded-md text-slate-500 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
-                            >
-                              <MoreHorizontal className="w-4 h-4" />
-                            </button>
-                            <AnimatePresence>
-                              {openMenuId === note.id && (
-                                <motion.div
-                                  initial={{ opacity: 0, scale: 0.95, y: -5 }}
-                                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                                  exit={{ opacity: 0, scale: 0.95, y: -5 }}
-                                  transition={{ duration: 0.15 }}
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="absolute right-0 top-full mt-1.5 w-32 bg-white dark:bg-[#1E293B] border border-slate-200/80 dark:border-white/10 rounded-xl shadow-xl shadow-slate-200/40 dark:shadow-black/40 z-50 overflow-hidden flex flex-col py-1"
-                                >
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleTogglePin(e, note);
-                                      setOpenMenuId(null);
-                                    }}
-                                    className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 flex items-center gap-2 transition-colors w-full text-left"
-                                  >
-                                    <Pin className="w-3.5 h-3.5" />
-                                    {note.isPinned ? "Unpin Note" : "Pin Note"}
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setDeleteDialog({
-                                        noteIds: [note.id],
-                                        title: note.isTrashed ? "Delete permanently?" : "Move to trash?",
-                                        subtitle: note.isTrashed 
-                                          ? "Are you sure you want to permanently delete this note? This action cannot be undone."
-                                          : "This note will be moved to the trash."
-                                      });
-                                      setOpenMenuId(null);
-                                    }}
-                                    className="px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 flex items-center gap-2 transition-colors w-full text-left"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                    {note.isTrashed ? "Delete Permanently" : "Move to Trash"}
-                                  </button>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                          </div>
-                        )}
-                      </div>
-                      
-                      <div className="flex items-center gap-3 mt-0.5">
-                        <span className="text-[10px] text-slate-400 dark:text-slate-450 whitespace-nowrap flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          {formatNoteDate(note.updatedAt)}
-                        </span>
-                        {note.createdBy && syncInfo?.portal === 'business' && (
-                          <span className="text-[10px] text-indigo-500/80 dark:text-indigo-400/80 whitespace-nowrap font-medium">
-                            By {note.createdBy}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {note.isLocked && !note.content ? (
-                      <div className="flex items-center gap-2 text-amber-500/80 dark:text-amber-500/70 text-xs font-semibold py-1">
-                        <span className="text-amber-500 font-bold">Notepad PIN Protected</span>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-3 leading-relaxed relative z-10 font-medium">
-                        {stripHtml(note.content) || "Empty note content..."}
-                      </p>
-                    )}
-
-                    <div className="flex flex-wrap items-center gap-2 mt-auto pt-2 relative z-10">
-                      {note.assignedTo && note.assignedTo.map((u, idx) => (
-                        <span key={`assign-${idx}`} className="text-[9px] font-bold px-2 py-1 rounded-md bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5" title="Assigned User">
-                          <Users className="w-2.5 h-2.5" />
-                          {u}
-                        </span>
-                      ))}
-                      {note.tags && note.tags.map((t, idx) => (
-                        <span key={idx} className="text-[9px] font-bold px-2 py-1 rounded-md bg-blue-50/50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                          <Tag className="w-2.5 h-2.5" />
-                          {t}
-                        </span>
-                      ))}
-                      {!note.isLocked && note.patientId && (
-                        <span className="text-[9px] font-mono font-bold px-2 py-1 rounded-md bg-blue-50 dark:bg-[#3B82F6]/10 text-blue-600 dark:text-[#3B82F6]">
-                          {note.patientId}
-                        </span>
-                      )}
-                      {note.isLocked && (
-                        <span className="text-[9px] font-bold px-2 py-1 rounded-md bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-500 flex items-center gap-1.5">
-                          <Lock className="w-2.5 h-2.5" />
-                          Locked
-                        </span>
-                      )}
-                    </div>
-                  </motion.div>
-                ))
+                sortedNotes.map(renderNoteCard)
               )}
             </AnimatePresence>
           </div>
@@ -2129,6 +2208,17 @@ export default function Home() {
                             users={usersList}
                             selectedUsernames={activeNote.assignedTo || []}
                             onChange={handleAssignedToChange}
+                          />
+                        </span>
+                      </>
+                    )}
+                    {syncInfo?.portal === "business" && (
+                      <>
+                        <span className="text-slate-300 dark:text-slate-700">|</span>
+                        <span className="flex items-center gap-1">
+                          <StatusSelect
+                            value={activeNote.status || "Pending"}
+                            onChange={handleStatusChange}
                           />
                         </span>
                       </>
